@@ -29,13 +29,17 @@ def cmd_collect(conn, cfg, profile) -> dict:
             errors += 1
             continue
         for job in jobs:
-            _, vid = db.upsert_job(conn, job)
-            if vid is None:
-                continue
-            inserted += 1
-            results = prefilter.run_prefilter(job, profile)
-            db.record_filter_results(conn, vid, results)
-            db.set_status(conn, vid, prefilter.decide(results))
+            try:
+                _, vid = db.upsert_job(conn, job)
+                if vid is None:
+                    continue
+                inserted += 1
+                results = prefilter.run_prefilter(job, profile)
+                db.record_filter_results(conn, vid, results)
+                db.set_status(conn, vid, prefilter.decide(results))
+            except Exception as e:
+                print(f"[collect] job {job.external_id} ({company['id']}) failed: {e}")
+                errors += 1
     return {"inserted": inserted,
             "companies": len(cfg.get("companies", [])), "errors": errors}
 

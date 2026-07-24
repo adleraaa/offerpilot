@@ -71,3 +71,40 @@ def test_retry_resets_permanent(conn):
     db.set_status(conn, v, "permanent_error")
     assert cli.cmd_retry(conn) == 1
     assert cli.cmd_status(conn) == {"ready_for_match": 1}
+
+
+def test_collect_isolates_per_job_failures(conn, monkeypatch):
+    def fake_collect_company(company, cfg):
+        return [
+            NormalizedJob(source="greenhouse", external_id="ok1",
+                          company_id=company["id"], title="A",
+                          location="New York, NY", url="https://x.co/ok1",
+                          canonical_url="https://x.co/ok1",
+                          description_text="Build agents."),
+            NormalizedJob(source="greenhouse", external_id="boom",
+                          company_id=company["id"], title="B",
+                          location="New York, NY", url="https://x.co/boom",
+                          canonical_url="https://x.co/boom",
+                          description_text="Explodes."),
+            NormalizedJob(source="greenhouse", external_id="ok2",
+                          company_id=company["id"], title="C",
+                          location="New York, NY", url="https://x.co/ok2",
+                          canonical_url="https://x.co/ok2",
+                          description_text="Build more agents."),
+        ]
+
+    real_prefilter = cli.prefilter.run_prefilter
+
+    def exploding_prefilter(job, profile):
+        if job.external_id == "boom":
+            raise RuntimeError("boom")
+        return real_prefilter(job, profile)
+
+    monkeypatch.setattr(cli, "_collect_company", fake_collect_company)
+    monkeypatch.setattr(cli.prefilter, "run_prefilter", exploding_prefilter)
+    cfg = {"companies": [{"id": "c", "ats": "greenhouse", "ats_slug": "c"}]}
+    profile = load_profile("profile.example.yaml")
+    out = cli.cmd_collect(conn, cfg, profile)
+    assert out["errors"] == 1
+    statuses = cli.cmd_status(conn)
+    assert statuses.get("ready_for_match", 0) + statuses.get("filtered_out", 0) + statuses.get("new", 0) >= 2
