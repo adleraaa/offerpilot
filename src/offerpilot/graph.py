@@ -1,16 +1,25 @@
 import json
+import re
 from offerpilot.models import MatchResult, total_score
 from offerpilot.profile import Profile
 from offerpilot.prompts import MATCH_SYSTEM, MATCH_USER
 from offerpilot.store import db
-from offerpilot.llm import RetryableLLMError, PermanentLLMError
+from offerpilot.llm import RetryableLLMError, PermanentLLMError, SpendCapExceeded
+
+
+_DELIM_RE = re.compile(r"</?\s*untrusted_job_posting[^>]*>", re.I)
+
+
+def _sanitize(text: str) -> str:
+    return _DELIM_RE.sub("[tag-removed]", text or "")
 
 
 def build_prompts(job_row, profile: Profile):
     user = MATCH_USER.format(
         profile_json=profile.model_dump_json(indent=2),
-        title=job_row["title"], location=job_row["location"] or "",
-        description=job_row["description_text"])
+        title=_sanitize(job_row["title"]),
+        location=_sanitize(job_row["location"] or ""),
+        description=_sanitize(job_row["description_text"]))
     return MATCH_SYSTEM, user
 
 
@@ -29,11 +38,12 @@ def _finish_run(conn, run_id, status):
     conn.commit()
 
 
-def _log_step(conn, run_id, node, attempt, status, output=None, error=None):
+def _log_step(conn, run_id, node, attempt, status, input=None, output=None,
+             error=None):
     conn.execute(
-        "INSERT INTO run_steps(run_id, node, attempt, status, output_json, "
-        "error, completed_at) VALUES(?,?,?,?,?,?,datetime('now'))",
-        (run_id, node, attempt, status, output, error))
+        "INSERT INTO run_steps(run_id, node, attempt, status, input_json, "
+        "output_json, error, completed_at) VALUES(?,?,?,?,?,?,?,datetime('now'))",
+        (run_id, node, attempt, status, input, output, error))
     conn.commit()
 
 
@@ -46,6 +56,7 @@ def run_match_for_version(conn, llm, profile: Profile, version_row,
     db.set_status(conn, vid, "matching")
     run_id = _start_run(conn, vid)
     system, user = build_prompts(version_row, profile)
+    prompt_input = json.dumps({"system": system, "user": user})
     try:
         result: MatchResult = llm.structured(
             node="match", run_id=run_id, system=system, user=user,
@@ -54,9 +65,19 @@ def run_match_for_version(conn, llm, profile: Profile, version_row,
                if e.source_id not in profile.experience_ids()]
         if bad:
             raise PermanentLLMError(f"invented evidence ids: {bad}")
+    except SpendCapExceeded as e:
+        _log_step(conn, run_id, "match", attempt, "spend_cap",
+                  input=prompt_input, error=str(e))
+        conn.execute("UPDATE job_versions SET attempt_count=? WHERE id=?",
+                     (attempt - 1, vid))
+        conn.commit()
+        db.set_status(conn, vid, "retryable_error")
+        db.set_status(conn, vid, "ready_for_match")
+        _finish_run(conn, run_id, "spend_cap")
+        raise
     except RetryableLLMError as e:
         _log_step(conn, run_id, "match", attempt, "retryable_error",
-                  error=str(e))
+                  input=prompt_input, error=str(e))
         if attempt >= max_auto_retries:
             db.set_status(conn, vid, "retryable_error")
             db.set_status(conn, vid, "permanent_error")
@@ -68,13 +89,22 @@ def run_match_for_version(conn, llm, profile: Profile, version_row,
         return "ready_for_match"
     except PermanentLLMError as e:
         _log_step(conn, run_id, "match", attempt, "permanent_error",
-                  error=str(e))
+                  input=prompt_input, error=str(e))
         db.set_status(conn, vid, "permanent_error")
         _finish_run(conn, run_id, "permanent_error")
         return "permanent_error"
 
     _log_step(conn, run_id, "match", attempt, "ok",
-              output=result.model_dump_json())
+              input=prompt_input, output=result.model_dump_json())
+
+    current_status = conn.execute(
+        "SELECT status FROM job_versions WHERE id=?", (vid,)).fetchone()["status"]
+    if current_status != "matching":
+        _log_step(conn, run_id, "gate", attempt, "stale_state",
+                  error=f"expected status 'matching', found {current_status!r}")
+        _finish_run(conn, run_id, "stale_state")
+        return current_status
+
     score = total_score(result)
     if result.eligibility == "fail":
         final = "eligibility_failed"
