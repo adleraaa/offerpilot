@@ -63,3 +63,30 @@ def test_excluded_company():
     p.constraints.excluded_companies = ["c"]
     r = prefilter.run_prefilter(make_job("Anything"), p)
     assert outcome_of(r, "excluded_company") == "fail"
+
+
+def test_no_clearance_required_is_unknown():
+    r = prefilter.run_prefilter(
+        make_job("No security clearance required for this role."),
+        get_profile())
+    assert outcome_of(r, "work_authorization") == "unknown"
+
+
+def test_clearance_not_required_is_unknown():
+    r = prefilter.run_prefilter(
+        make_job("Security clearance is not required."), get_profile())
+    assert outcome_of(r, "work_authorization") == "unknown"
+
+
+def test_vesting_years_is_unknown():
+    r = prefilter.run_prefilter(
+        make_job("Benefits: minimum of 3 years of company tenure required "
+                 "for full 401k vesting."), get_profile())
+    assert outcome_of(r, "years_of_experience") == "unknown"
+
+
+def test_not_remote_onsite_elsewhere_fails():
+    r = prefilter.run_prefilter(
+        make_job("This role is NOT remote; onsite in Chicago is required, "
+                 "in-person only.", location="Chicago, IL"), get_profile())
+    assert outcome_of(r, "location") == "fail"

@@ -3,14 +3,26 @@ from offerpilot.models import NormalizedJob, FilterResult
 from offerpilot.profile import Profile
 
 _YEARS_REQ = re.compile(
-    r"(?:requires?|must have|minimum(?: of)?)\s+(\d+)\s*\+?\s*years?", re.I)
-_YEARS_ANY = re.compile(r"(\d+)\s*\+?\s*years?", re.I)
-_CLEARANCE = re.compile(
-    r"(?:security clearance|TS/SCI|top secret)[^.]*?(?:required|must)", re.I)
-_CLEARANCE_ANY = re.compile(
-    r"(?:active|current)?\s*(?:TS/SCI|security clearance)\s*(?:required)", re.I)
+    r"(?:requires?|must have|minimum(?: of)?)\s+(\d+)\s*\+?\s*years?"
+    r"[^.\n]{0,40}?(?:experience|\bexp\b)", re.I)
+_CLEARANCE_TERM = re.compile(r"(?:security clearance|TS/SCI|top secret)", re.I)
+_NEG_BEFORE = re.compile(r"(?:\bno|\bnot|\bwithout|n'?t)\s+(?:\w+\s+){0,3}$", re.I)
+_NOT_REQ_AFTER = re.compile(r"^\s*(?:is\s+|are\s+)?not\s+required", re.I)
+_REQ_AFTER = re.compile(r"^\s*(?:\w+\s+){0,3}?(?:required|must|mandatory)", re.I)
 _REMOTE = re.compile(r"\bremote\b", re.I)
+_NOT_REMOTE = re.compile(r"\b(?:not|isn'?t|no)\s+remote\b", re.I)
 _ONSITE = re.compile(r"\b(?:onsite|on-site|in[- ]office|in[- ]person)\b", re.I)
+
+
+def _clearance_requirement(text: str) -> str | None:
+    for m in _CLEARANCE_TERM.finditer(text):
+        before = text[max(0, m.start() - 40):m.start()]
+        after = text[m.end():m.end() + 40]
+        if _NEG_BEFORE.search(before) or _NOT_REQ_AFTER.search(after):
+            continue
+        if _REQ_AFTER.search(after):
+            return m.group(0)
+    return None
 
 
 def _rule_years(job: NormalizedJob, profile: Profile) -> FilterResult:
@@ -30,9 +42,10 @@ def _rule_years(job: NormalizedJob, profile: Profile) -> FilterResult:
 
 def _rule_authorization(job: NormalizedJob, profile: Profile) -> FilterResult:
     text = job.description_text
-    if _CLEARANCE.search(text) or _CLEARANCE_ANY.search(text):
+    term = _clearance_requirement(text)
+    if term is not None:
         return FilterResult(outcome="fail", rule="work_authorization",
-                           extracted_value="security clearance required",
+                           extracted_value=term,
                            reason="requires clearance candidate lacks")
     return FilterResult(outcome="unknown", rule="work_authorization",
                        reason="posting does not state a blocking requirement")
@@ -41,15 +54,16 @@ def _rule_authorization(job: NormalizedJob, profile: Profile) -> FilterResult:
 def _rule_location(job: NormalizedJob, profile: Profile) -> FilterResult:
     loc = job.location or ""
     text = job.description_text
-    if profile.constraints.remote_ok and (_REMOTE.search(loc)
-                                          or _REMOTE.search(text)):
-        return FilterResult(outcome="pass", rule="location",
-                           extracted_value=loc, reason="remote allowed")
     for ok in profile.constraints.locations:
         city = ok.split(",")[0].strip().lower()
         if city and city in loc.lower():
             return FilterResult(outcome="pass", rule="location",
                                extracted_value=loc, reason=f"matches {ok}")
+    remote_mentioned = bool(_REMOTE.search(loc) or _REMOTE.search(text))
+    if (profile.constraints.remote_ok and remote_mentioned
+            and not _NOT_REMOTE.search(text)):
+        return FilterResult(outcome="pass", rule="location",
+                           extracted_value=loc, reason="remote allowed")
     if loc and _ONSITE.search(text):
         return FilterResult(outcome="fail", rule="location",
                            extracted_value=loc,
