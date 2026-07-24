@@ -1,7 +1,7 @@
 # OfferPilot — Design Spec
 
-Date: 2026-07-24 (rev 3, after second external review)
-Status: Revised; pending user re-approval
+Date: 2026-07-24 (rev 4, final — approved, frozen for implementation)
+Status: Approved. Scope changes require a new spec revision with reason.
 
 ## Purpose
 
@@ -67,9 +67,13 @@ profile+retrieval on the labeled set.
 1. **Collect**: Greenhouse + Lever collectors (core; Ashby second tier)
    pull postings for companies in `config.yaml`, normalize **in memory**
    (normalization is synchronous and deterministic — it is not a stored
-   state), validate, dedupe by (source, external_id) and URL → SQLite
-   `status=new`. Content changes create a new `job_versions` row
-   (description hash + snapshot) so past scoring stays reproducible.
+   state), validate, dedupe → SQLite `status=new`. **Dedupe identity**:
+   primary identity is `unique(source, external_id)`; the canonicalized
+   URL (tracking params stripped, trailing slash normalized) is a
+   secondary duplicate signal that may link cross-source duplicates but
+   is never trusted as sole identity. Content changes create a new
+   `job_versions` row (description hash + snapshot) so past scoring
+   stays reproducible.
 2. **Deterministic prefilter** (pure Python, no LLM): each hard-constraint
    rule returns a three-state `FilterResult`:
    `outcome: pass | fail | unknown`, plus `rule`, `extracted_value`,
@@ -94,7 +98,12 @@ profile+retrieval on the labeled set.
      `preferences 0-20`; `evidence: list[EvidenceRef]` where each ref
      carries a `source_id` that MUST exist in the corpus (validated in
      code); `gaps`, `uncertainties`, `confidence`. **Total score is
-     computed in Python**, never by the model.
+     computed in Python**, never by the model. The model may return
+     `eligibility=fail` **only** when it identifies an explicit job
+     requirement and cites the exact normalized field or posting excerpt
+     conflicting with the profile; vibes-based seniority guesses must
+     return `unknown` — the prefilter's conservative principle applies
+     to the model too.
    - **gate** (code): `eligibility == fail` → `eligibility_failed`;
      total < threshold → `scored_low`; otherwise continue.
      `eligibility == unknown` continues, but the review panel must show
@@ -120,7 +129,19 @@ profile+retrieval on the labeled set.
    hides all model output). **Formal eval metrics use `blind_eval`
    labels only**; review_feedback labels are auxiliary signal. The
    blind labeling view ships in Week 2 with the eval dataset.
-5. **Evals** (`run_eval.py`, target 40–60 blind-labeled jobs):
+5. **Evals** (`run_eval.py`, target 40–60 blind-labeled jobs — described
+   in the README as “a small blind-labeled evaluation set”, not a
+   large-scale benchmark):
+   - **Decision formula (fixed)**:
+     `predicted_good_fit = (eligibility != "fail") and (total_score >= threshold)`.
+     Blind labels: good_fit → positive, poor_fit → negative,
+     uncertain → excluded from primary P/R/F1 but reported separately.
+   - **End-to-end scoring**: filtered_out, eligibility_failed, and
+     scored_low all count as predicted negative; pending_review counts
+     as predicted positive — so prefilter mistakes are visible, not
+     hidden by replaying only the match node. Separately reported:
+     **prefilter false-negative count** (blind good_fit jobs that were
+     filtered_out; target 0).
    - Fit classification: precision / recall / F1, confusion matrix.
    - Ranking: Precision@5 / @10.
    - Groundedness — **automated heuristics** (not full fact-checking):
@@ -132,16 +153,33 @@ profile+retrieval on the labeled set.
 
 ## Job status state machine
 
+**Status lives on `job_versions`, not `jobs`.** `jobs` stores stable
+posting identity (company, source, external_id, canonical URL,
+first/last seen, active/removed). `job_versions` stores immutable
+content snapshots plus all processing state: `status`,
+`processing_started_at`, filter results, and the runs / review items
+that reference it. A new version starts at `new` regardless of the
+previous version's outcome.
+
 ```
 new → (filtered_out | ready_for_match)
 ready_for_match → matching → (eligibility_failed | scored_low |
                               pending_review | retryable_error |
                               permanent_error)
+retryable_error → ready_for_match   (via `offerpilot retry` or the
+                                     runner's startup sweep)
 pending_review → (approved | rejected | saved)
 ```
 
 (Normalization happens in memory before insert; there is no
 `normalized` state.)
+
+**Error taxonomy**: retryable = timeouts, connection drops, HTTP 429/5xx,
+transient API outages. Permanent = repeated Pydantic validation
+failures, repeated nonexistent `source_id` citations, profile/schema
+config errors, missing required snapshot fields, prompt-construction
+bugs. **A job version is auto-retried at most 3 graph runs**; after
+that it becomes `permanent_error` and requires manual reset.
 
 Runner is single-process; each transition is one SQLite transaction.
 `matching` rows carry `processing_started_at`; on startup, stale rows
@@ -180,6 +218,21 @@ transaction → re-verify state → write result → commit).
   timestamps, status, input/output JSON, error. This is what makes
   multi-attempt traces, eval reproduction, and the demo UI trace view
   possible.
+- Processing state (`status`, `processing_started_at`, filter results)
+  lives on `job_versions`; `jobs` holds identity only (see state
+  machine section).
+
+## Privacy boundaries (public repo)
+
+Gitignored, never committed: `.env`, `profile.yaml`, `preferences.md`,
+`data/` (SQLite DB, Chroma), and any run output containing candidate
+context — note `run_steps.input_json` contains the full profile and
+prompts, so the real database must never enter git.
+
+Committed instead: `profile.example.yaml` and `config.example.yaml`
+(synthetic data), synthetic demo fixtures, and a sanitized eval dataset.
+Real config follows the `config.example.yaml` (committed) /
+`config.yaml` (gitignored) pattern.
 
 ## Error handling
 
