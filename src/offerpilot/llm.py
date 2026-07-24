@@ -42,11 +42,11 @@ class LLMClient:
 
     def structured(self, *, node: str, run_id, system: str, user: str,
                    schema: type[BaseModel]) -> BaseModel:
-        if self._today_spend() >= self.cfg["daily_spend_cap_usd"]:
-            raise SpendCapExceeded(
-                f"daily cap {self.cfg['daily_spend_cap_usd']} reached")
         last_err = None
         for _attempt in range(3):
+            if self._today_spend() >= self.cfg["daily_spend_cap_usd"]:
+                raise SpendCapExceeded(
+                    f"daily cap {self.cfg['daily_spend_cap_usd']} reached")
             try:
                 resp = self.client.chat.completions.create(
                     model=self.cfg["model"],
@@ -56,9 +56,10 @@ class LLMClient:
                     temperature=0)
             except Exception as e:  # SDK/network errors
                 status = getattr(e, "status_code", None)
-                if status in (429,) or (status is not None and status >= 500):
+                name = type(e).__name__
+                if status == 429 or (isinstance(status, int) and status >= 500):
                     raise RetryableLLMError(str(e)) from e
-                if "timeout" in str(e).lower():
+                if isinstance(e, TimeoutError) or "Timeout" in name or "Connection" in name:
                     raise RetryableLLMError(str(e)) from e
                 raise PermanentLLMError(str(e)) from e
             self._record(node, run_id, resp.usage)
