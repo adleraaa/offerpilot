@@ -1,0 +1,92 @@
+import json
+from offerpilot.models import MatchResult, total_score
+from offerpilot.profile import Profile
+from offerpilot.prompts import MATCH_SYSTEM, MATCH_USER
+from offerpilot.store import db
+from offerpilot.llm import RetryableLLMError, PermanentLLMError
+
+
+def build_prompts(job_row, profile: Profile):
+    user = MATCH_USER.format(
+        profile_json=profile.model_dump_json(indent=2),
+        title=job_row["title"], location=job_row["location"] or "",
+        description=job_row["description_text"])
+    return MATCH_SYSTEM, user
+
+
+def _start_run(conn, version_id):
+    cur = conn.execute(
+        "INSERT INTO runs(run_type, job_version_id, status) "
+        "VALUES('graph', ?, 'running') RETURNING id", (version_id,))
+    run_id = cur.fetchone()["id"]
+    conn.commit()
+    return run_id
+
+
+def _finish_run(conn, run_id, status):
+    conn.execute("UPDATE runs SET status=?, completed_at=datetime('now') "
+                 "WHERE id=?", (status, run_id))
+    conn.commit()
+
+
+def _log_step(conn, run_id, node, attempt, status, output=None, error=None):
+    conn.execute(
+        "INSERT INTO run_steps(run_id, node, attempt, status, output_json, "
+        "error, completed_at) VALUES(?,?,?,?,?,?,datetime('now'))",
+        (run_id, node, attempt, status, output, error))
+    conn.commit()
+
+
+def run_match_for_version(conn, llm, profile: Profile, version_row,
+                          threshold: int, max_auto_retries: int) -> str:
+    vid = version_row["id"]
+    attempt = version_row["attempt_count"] + 1
+    conn.execute("UPDATE job_versions SET attempt_count=? WHERE id=?",
+                 (attempt, vid))
+    db.set_status(conn, vid, "matching")
+    run_id = _start_run(conn, vid)
+    system, user = build_prompts(version_row, profile)
+    try:
+        result: MatchResult = llm.structured(
+            node="match", run_id=run_id, system=system, user=user,
+            schema=MatchResult)
+        bad = [e.source_id for e in result.evidence
+               if e.source_id not in profile.experience_ids()]
+        if bad:
+            raise PermanentLLMError(f"invented evidence ids: {bad}")
+    except RetryableLLMError as e:
+        _log_step(conn, run_id, "match", attempt, "retryable_error",
+                  error=str(e))
+        if attempt >= max_auto_retries:
+            db.set_status(conn, vid, "retryable_error")
+            db.set_status(conn, vid, "permanent_error")
+            _finish_run(conn, run_id, "permanent_error")
+            return "permanent_error"
+        db.set_status(conn, vid, "retryable_error")
+        db.set_status(conn, vid, "ready_for_match")
+        _finish_run(conn, run_id, "retryable_error")
+        return "ready_for_match"
+    except PermanentLLMError as e:
+        _log_step(conn, run_id, "match", attempt, "permanent_error",
+                  error=str(e))
+        db.set_status(conn, vid, "permanent_error")
+        _finish_run(conn, run_id, "permanent_error")
+        return "permanent_error"
+
+    _log_step(conn, run_id, "match", attempt, "ok",
+              output=result.model_dump_json())
+    score = total_score(result)
+    if result.eligibility == "fail":
+        final = "eligibility_failed"
+    elif score < threshold:
+        final = "scored_low"
+    else:
+        conn.execute(
+            "INSERT INTO review_items(job_version_id, match_json, "
+            "total_score) VALUES(?,?,?)",
+            (vid, result.model_dump_json(), score))
+        conn.commit()
+        final = "pending_review"
+    db.set_status(conn, vid, final)
+    _finish_run(conn, run_id, "ok")
+    return final
