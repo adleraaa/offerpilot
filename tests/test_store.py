@@ -71,3 +71,22 @@ def test_filter_results_persist(conn):
     n = conn.execute("SELECT COUNT(*) c FROM filter_results "
                      "WHERE job_version_id=?", (v,)).fetchone()["c"]
     assert n == 1
+
+
+def test_get_versions_by_status_filters_and_orders(conn):
+    _, v1 = db.upsert_job(conn, make_job(external_id="a", url="https://x.co/j/a", canonical_url="https://x.co/j/a"))
+    _, v2 = db.upsert_job(conn, make_job(external_id="b", url="https://x.co/j/b", canonical_url="https://x.co/j/b"))
+    db.set_status(conn, v1, "ready_for_match")
+    rows = db.get_versions_by_status(conn, "ready_for_match")
+    assert [r["id"] for r in rows] == [v1]
+    rows_new = db.get_versions_by_status(conn, "new")
+    assert [r["id"] for r in rows_new] == [v2]
+
+
+def test_sweep_leaves_fresh_matching_rows(conn):
+    _, v = db.upsert_job(conn, make_job())
+    db.set_status(conn, v, "ready_for_match")
+    db.set_status(conn, v, "matching")
+    assert db.sweep_stale_matching(conn) == 0
+    row = conn.execute("SELECT status FROM job_versions WHERE id=?", (v,)).fetchone()
+    assert row["status"] == "matching"

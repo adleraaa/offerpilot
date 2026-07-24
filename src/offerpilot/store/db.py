@@ -90,7 +90,7 @@ def _content_hash(job: NormalizedJob) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def upsert_job(conn, job: NormalizedJob):
+def upsert_job(conn: sqlite3.Connection, job: NormalizedJob) -> tuple[int, int | None]:
     cur = conn.execute(
         "INSERT INTO jobs(source, external_id, company_id, canonical_url) "
         "VALUES(?,?,?,?) "
@@ -132,7 +132,7 @@ def set_status(conn, version_id: int, new_status: str) -> None:
     conn.commit()
 
 
-def get_versions_by_status(conn, status: str):
+def get_versions_by_status(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM job_versions WHERE status=? ORDER BY id",
         (status,)).fetchall()
