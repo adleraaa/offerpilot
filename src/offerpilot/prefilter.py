@@ -12,6 +12,9 @@ _REQ_AFTER = re.compile(r"^\s*(?:\w+\s+){0,3}?(?:required|must|mandatory)", re.I
 _REMOTE = re.compile(r"\bremote\b", re.I)
 _NOT_REMOTE = re.compile(r"\b(?:not|isn'?t|no)\s+remote\b", re.I)
 _ONSITE = re.compile(r"\b(?:onsite|on-site|in[- ]office|in[- ]person)\b", re.I)
+_NEG_YEARS_BEFORE = re.compile(
+    r"(?:\bdoes\s+not|\bdoesn'?t|\bdo\s+not|\bdon'?t|\bno\b|\bnot\b|\bwithout\b)"
+    r"\s*(?:\w+\s+){0,2}$", re.I)
 
 
 def _clearance_requirement(text: str) -> str | None:
@@ -26,8 +29,11 @@ def _clearance_requirement(text: str) -> str | None:
 
 
 def _rule_years(job: NormalizedJob, profile: Profile) -> FilterResult:
-    m = _YEARS_REQ.search(job.description_text)
-    if m:
+    text = job.description_text
+    for m in _YEARS_REQ.finditer(text):
+        before = text[max(0, m.start() - 30):m.start()]
+        if _NEG_YEARS_BEFORE.search(before):
+            continue
         years = int(m.group(1))
         if years >= 3:
             return FilterResult(outcome="fail", rule="years_of_experience",
@@ -62,6 +68,10 @@ def _rule_location(job: NormalizedJob, profile: Profile) -> FilterResult:
     remote_mentioned = bool(_REMOTE.search(loc) or _REMOTE.search(text))
     if (profile.constraints.remote_ok and remote_mentioned
             and not _NOT_REMOTE.search(text)):
+        if _ONSITE.search(text):
+            return FilterResult(outcome="unknown", rule="location",
+                               extracted_value=loc or None,
+                               reason="mixed remote/onsite signals")
         return FilterResult(outcome="pass", rule="location",
                            extracted_value=loc, reason="remote allowed")
     if loc and _ONSITE.search(text):

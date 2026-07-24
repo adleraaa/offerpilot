@@ -90,3 +90,25 @@ def test_not_remote_onsite_elsewhere_fails():
         make_job("This role is NOT remote; onsite in Chicago is required, "
                  "in-person only.", location="Chicago, IL"), get_profile())
     assert outcome_of(r, "location") == "fail"
+
+
+def test_waived_years_requirement_is_unknown():
+    r = prefilter.run_prefilter(
+        make_job("This position does NOT require 3 years of experience - "
+                 "even entry-level candidates are welcome."), get_profile())
+    assert outcome_of(r, "years_of_experience") == "unknown"
+
+
+def test_no_minimum_years_is_unknown():
+    r = prefilter.run_prefilter(
+        make_job("No minimum of 5 years experience is needed to apply."),
+        get_profile())
+    assert outcome_of(r, "years_of_experience") == "unknown"
+
+
+def test_hybrid_remote_onsite_is_unknown():
+    r = prefilter.run_prefilter(
+        make_job("Remote position, though onsite presence in our Austin "
+                 "office is required 3 days/week.", location="Austin, TX"),
+        get_profile())
+    assert outcome_of(r, "location") == "unknown"
