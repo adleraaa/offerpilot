@@ -1,0 +1,20 @@
+llm:
+  base_url: https://api.deepseek.com
+  model: deepseek-chat
+  daily_spend_cap_usd: 2.00
+  prices:
+    deepseek-chat:
+      input_per_mtok_usd: 0.27
+      output_per_mtok_usd: 1.10
+match:
+  score_threshold: 60
+  max_auto_retries: 3
+companies:
+  - id: examplecorp
+    name: ExampleCorp
+    ats: greenhouse
+    ats_slug: examplecorp
+  - id: samplestartup
+    name: SampleStartup
+    ats: lever
+    ats_slug: samplestartup

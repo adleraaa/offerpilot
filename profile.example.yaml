@@ -1,0 +1,24 @@
+identity:
+  name: Alex Doe
+  education: "B.S. Computer Science, Example University"
+  graduation: "2029-05"
+constraints:
+  locations: ["New York, NY", "Hoboken, NJ"]
+  remote_ok: true
+  pay_floor_hourly_usd: 20
+  work_authorization: us_citizen
+  employment_types: ["internship", "part_time"]
+  excluded_companies: []
+skills:
+  languages: [Python, TypeScript, Java]
+  frameworks: [Next.js, LangGraph, FastAPI]
+  ai_ml: [LLM APIs, structured outputs, prompt design]
+experiences:
+  - id: sample_project
+    title: Sample AI Project
+    summary: Built an LLM-powered web app with structured outputs and fallbacks.
+    skills: [Python, LLM APIs]
+  - id: sample_automation
+    title: Sample Automation Tool
+    summary: Local browser automation with strict safety boundaries.
+    skills: [Python, Playwright]

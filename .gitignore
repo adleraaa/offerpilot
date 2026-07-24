@@ -1,0 +1,9 @@
+.env
+config.yaml
+profile.yaml
+preferences.md
+data/
+*.db
+__pycache__/
+*.egg-info/
+.venv/
