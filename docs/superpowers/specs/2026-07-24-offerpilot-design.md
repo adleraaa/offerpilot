@@ -1,6 +1,6 @@
 # OfferPilot — Design Spec
 
-Date: 2026-07-24 (rev 2, after external review)
+Date: 2026-07-24 (rev 3, after second external review)
 Status: Revised; pending user re-approval
 
 ## Purpose
@@ -65,21 +65,29 @@ profile+retrieval on the labeled set.
 ## Data flow
 
 1. **Collect**: Greenhouse + Lever collectors (core; Ashby second tier)
-   pull postings for companies in `config.yaml` → normalize → dedupe by
-   (source, external_id) and URL → SQLite `status=new`. Content changes
-   create a new `job_versions` row (description hash + snapshot) so past
-   scoring stays reproducible.
-2. **Deterministic prefilter** (pure Python, no LLM): hard constraints
-   from the profile — location/remote, graduation-year and
-   years-of-experience requirements parsed conservatively, work
-   authorization, pay floor, excluded companies. Fail → `filtered_out`
-   with the failed rule recorded. Pass → `ready_for_match`.
-3. **Graph run** per job version:
-   - **research node**: code (not the LLM) decides whether the JD is too
-     thin; if so the model may request tools — `fetch_job_detail`
-     (ATS full description) or, stretch, `browse_careers_page(company_id)`.
-     Tool requests are proposals: the program validates every call
-     (see Security) before executing.
+   pull postings for companies in `config.yaml`, normalize **in memory**
+   (normalization is synchronous and deterministic — it is not a stored
+   state), validate, dedupe by (source, external_id) and URL → SQLite
+   `status=new`. Content changes create a new `job_versions` row
+   (description hash + snapshot) so past scoring stays reproducible.
+2. **Deterministic prefilter** (pure Python, no LLM): each hard-constraint
+   rule returns a three-state `FilterResult`:
+   `outcome: pass | fail | unknown`, plus `rule`, `extracted_value`,
+   `reason` — all persisted. **Principle: only definite violations
+   filter a job out; unparseable postings pass through as `unknown`.**
+   Rules: location/remote, graduation-year window, years-of-experience,
+   work authorization, pay floor, excluded companies. Any `fail` →
+   `filtered_out` (failed rule recorded); otherwise `ready_for_match`.
+3. **Graph run** per job version. **The core-MVP graph begins at the
+   match node** using the collector-provided description:
+   `match → gate → brief → pending_review`. The conditional research
+   branch below is a later extension that adds nodes without changing
+   the match/gate/brief interfaces.
+   - **research node (extension, not MVP)**: code (not the LLM) decides
+     whether the JD is too thin; if so the model may request tools —
+     `fetch_job_detail` (ATS full description) or, stretch,
+     `browse_careers_page(company_id)`. Tool requests are proposals:
+     the program validates every call (see Security) before executing.
    - **match node**: profile + retrieved evidence → `MatchResult`
      (Pydantic): `eligibility` (pass/fail/unknown) + reasons; subscores
      `skills 0-30`, `projects 0-20`, `domain 0-15`, `seniority 0-15`,
@@ -87,37 +95,63 @@ profile+retrieval on the labeled set.
      carries a `source_id` that MUST exist in the corpus (validated in
      code); `gaps`, `uncertainties`, `confidence`. **Total score is
      computed in Python**, never by the model.
-   - **gate** (code): total ≥ threshold continues; else `scored_low`.
+   - **gate** (code): `eligibility == fail` → `eligibility_failed`;
+     total < threshold → `scored_low`; otherwise continue.
+     `eligibility == unknown` continues, but the review panel must show
+     a prominent “Eligibility unresolved” banner — unknown is never
+     silently treated as pass.
    - **brief node**: produces an *application brief* — why it fits,
-     cited evidence, main gaps, resume bullets to emphasize, suggested
-     answers to likely application questions, optional outreach
-     paragraph. One structured output, not five template types.
+     cited evidence, main gaps, resume bullets to emphasize,
+     evidence-grounded talking points for common application themes
+     (why this role / relevant project / main strength / gap to
+     address — marked generic unless actual application questions were
+     collected), optional outreach paragraph. One structured output.
    - Written to review queue, `status=pending_review`.
 4. **Review panel** actions: approve / reject(+reason) / edit /
    save-for-later. Labels are **split**: `fit_label`
-   (good_fit / poor_fit / uncertain — the model-quality signal),
-   `action_label` (apply / skip / save), `rejection_reason`
-   (skills, seniority, location, compensation, duplicate, expired,
-   not_interested, bad_draft, other). Only `fit_label` feeds evals.
-5. **Evals** (`run_eval.py`, target 40–60 labeled jobs):
+   (good_fit / poor_fit / uncertain), `action_label`
+   (apply / skip / save), `rejection_reason` (skills, seniority,
+   location, compensation, duplicate, expired, not_interested,
+   bad_draft, other).
+   **Label provenance**: every label row records `label_source` —
+   `review_feedback` (given while model score/reasons/brief were
+   visible; subject to anchoring bias) or `blind_eval` (given in a
+   separate labeling view that shows only job + profile summary and
+   hides all model output). **Formal eval metrics use `blind_eval`
+   labels only**; review_feedback labels are auxiliary signal. The
+   blind labeling view ships in Week 2 with the eval dataset.
+5. **Evals** (`run_eval.py`, target 40–60 blind-labeled jobs):
    - Fit classification: precision / recall / F1, confusion matrix.
    - Ranking: Precision@5 / @10.
-   - Groundedness (code checks): every `EvidenceRef.source_id` exists;
-     draft-lint flags skills/experience claims absent from the profile.
+   - Groundedness — **automated heuristics** (not full fact-checking):
+     every `EvidenceRef.source_id` exists; unknown skill/entity
+     detection; numeric-claim and unsupported-proper-noun flags.
+     Complemented by a **manual audit**: ~20 sampled briefs scored for
+     unsupported-claim rate (severity: minor / material).
    - Results with timestamp + git commit committed to `evals/results/`.
 
 ## Job status state machine
 
 ```
-new → normalized → (filtered_out | ready_for_match)
-ready_for_match → matching → (scored_low | pending_review |
-                              retryable_error | permanent_error)
+new → (filtered_out | ready_for_match)
+ready_for_match → matching → (eligibility_failed | scored_low |
+                              pending_review | retryable_error |
+                              permanent_error)
 pending_review → (approved | rejected | saved)
 ```
+
+(Normalization happens in memory before insert; there is no
+`normalized` state.)
 
 Runner is single-process; each transition is one SQLite transaction.
 `matching` rows carry `processing_started_at`; on startup, stale rows
 (> 15 min) are reset to `ready_for_match`.
+
+**SQLite concurrency**: WAL mode with a busy timeout — the FastAPI
+panel and the runner may access the DB concurrently. Writes use short
+transactions; the runner **never holds a transaction open across an
+LLM or network call** (read state → commit → call LLM → new
+transaction → re-verify state → write result → commit).
 
 ## Security (untrusted input + tools)
 
@@ -136,10 +170,16 @@ Runner is single-process; each transition is one SQLite transaction.
 
 ## SQLite schema (right-sized)
 
-`companies`, `jobs`, `job_versions`, `runs` (one row per graph/collector
-run with node + attempt info), `review_items`, `labels`, `llm_usage`.
-No separate node_runs/graph_runs/collector_runs tables — `runs` covers
-reproducibility at this scale.
+`companies`, `jobs`, `job_versions`, `runs`, `run_steps`,
+`review_items`, `labels`, `llm_usage`.
+
+- `runs`: one row per graph or collector run — id, run_type,
+  job_version_id, started_at, completed_at, status, git_commit,
+  config_hash.
+- `run_steps`: one row per node attempt — run_id, node, attempt,
+  timestamps, status, input/output JSON, error. This is what makes
+  multi-attempt traces, eval reproduction, and the demo UI trace view
+  possible.
 
 ## Error handling
 
@@ -173,18 +213,22 @@ MatchResult rubric + DeepSeek structured-output wrapper; CLI
 (collect / match / status).
 
 **Week 2 — make it a portfolio**: review panel with evidence display;
-application brief; split labels; eval dataset + groundedness checks;
-demo mode; README + demo GIF.
+application brief; split labels; blind labeling view + eval dataset +
+groundedness checks; demo mode; README + demo GIF.
 
 **Later (cuttable)**: Ashby; LangGraph research-tool branch;
 Playwright careers tool; HN collector; retrieval-method comparison eval;
 automatic KB ingestion from GitHub.
 
-## Resume phrasing target (honest, after completion)
+## Resume phrasing targets (honest, staged)
 
-“Built OfferPilot, a human-in-the-loop job-search agent using LangGraph
-and DeepSeek: a bounded research→match→draft workflow with
-conditional, program-validated tool calls, retrieval over structured
-candidate evidence, Pydantic-validated outputs, resumable SQLite state,
-and an approval-gated review panel. Evaluated role matching and evidence
-grounding on a labeled benchmark across prompt and retrieval revisions.”
+**After core MVP** (no research tools yet — do not mention tool calls):
+“Built OfferPilot, a human-in-the-loop job-matching agent using LangGraph
+and DeepSeek, with deterministic eligibility filtering, structured
+candidate evidence, Pydantic-validated rubric scoring, resumable SQLite
+state, and an approval-gated review panel. Evaluated fit classification,
+ranking quality, and evidence grounding on a blind-labeled benchmark.”
+
+**After the research-tool extension ships**, upgrade to:
+“…a bounded research→match→draft workflow with conditional,
+program-validated tool calls (ATS APIs, Playwright)…”
