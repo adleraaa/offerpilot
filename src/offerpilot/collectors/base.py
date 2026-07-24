@@ -8,7 +8,7 @@ TRACKING_PREFIXES = ("utm_", "gh_src", "lever-origin", "ref", "fbclid",
 
 def canonicalize_url(url: str) -> str:
     parts = urlsplit(url.strip())
-    kept = [(k, v.rstrip("/")) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
             if not any(k.lower().startswith(p) for p in TRACKING_PREFIXES)]
     path = parts.path.rstrip("/") or "/"
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path,
@@ -17,5 +17,6 @@ def canonicalize_url(url: str) -> str:
 
 def strip_html(text: str) -> str:
     unescaped = html.unescape(text)
-    no_tags = re.sub(r"<[^>]+>", "", unescaped)
-    return re.sub(r"\s+", " ", no_tags).strip()
+    no_tags = re.sub(r"<[^>]+>", " ", unescaped)
+    collapsed = re.sub(r"\s+", " ", no_tags).strip()
+    return re.sub(r"\s+([.,;:!?])", r"\1", collapsed)
