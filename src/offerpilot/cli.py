@@ -88,16 +88,32 @@ def main(argv=None):
     conn = db.connect(args.db)
     db.init_schema(conn)
     cfg = load_config(args.config)
-    profile_path = (args.profile if os.path.exists(args.profile)
-                    else "profile.example.yaml")
-    profile = load_profile(profile_path)
+
+    if args.command == "match":
+        if not os.path.exists(args.profile):
+            print("profile.yaml not found - refusing to spend LLM budget "
+                  "scoring against the synthetic example profile. Create "
+                  "profile.yaml (copy profile.example.yaml) first.")
+            raise SystemExit(1)
+        profile = load_profile(args.profile)
+    else:
+        if os.path.exists(args.profile):
+            profile_path = args.profile
+        else:
+            profile_path = "profile.example.yaml"
+            print("[warn] profile.yaml not found; using profile.example.yaml "
+                  "for prefiltering.")
+        profile = load_profile(profile_path)
 
     if args.command == "collect":
         print(cmd_collect(conn, cfg, profile))
     elif args.command == "match":
         db.sweep_stale_matching(conn)
-        llm = LLMClient(conn, cfg["llm"],
-                        os.environ.get("DEEPSEEK_API_KEY", ""))
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        if not api_key:
+            print("DEEPSEEK_API_KEY is not set; refusing to run match")
+            raise SystemExit(1)
+        llm = LLMClient(conn, cfg["llm"], api_key)
         print(cmd_match(conn, cfg, profile, llm))
     elif args.command == "status":
         print(cmd_status(conn))

@@ -44,3 +44,4 @@ def test_lever_parse():
     assert j.source == "lever" and j.external_id == "ab12-cd34"
     assert j.location == "New York City"
     assert j.canonical_url.endswith("/ab12-cd34")
+    assert j.posted_at.startswith("2025-07-01")

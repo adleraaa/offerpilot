@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import requests
 from offerpilot.models import NormalizedJob
 from offerpilot.collectors.base import canonicalize_url
@@ -15,6 +17,9 @@ def parse(payload: list, company_id: str) -> list[NormalizedJob]:
     out = []
     for p in payload:
         url = p["hostedUrl"]
+        created = p.get("createdAt")
+        posted_at = (datetime.fromtimestamp(created / 1000, tz=timezone.utc).isoformat()
+                     if created else None)
         out.append(NormalizedJob(
             source="lever",
             external_id=p["id"],
@@ -24,6 +29,6 @@ def parse(payload: list, company_id: str) -> list[NormalizedJob]:
             url=url,
             canonical_url=canonicalize_url(url),
             description_text=p.get("descriptionPlain", ""),
-            posted_at=str(p.get("createdAt", "")) or None,
+            posted_at=posted_at,
         ))
     return out

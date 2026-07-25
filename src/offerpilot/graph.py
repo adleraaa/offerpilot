@@ -7,7 +7,7 @@ from offerpilot.store import db
 from offerpilot.llm import RetryableLLMError, PermanentLLMError, SpendCapExceeded
 
 
-_DELIM_RE = re.compile(r"</?\s*untrusted_job_posting[^>]*>", re.I)
+_DELIM_RE = re.compile(r"<\s*/?\s*untrusted_job_posting[^>]*>", re.I)
 
 
 def _sanitize(text: str) -> str:

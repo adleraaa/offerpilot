@@ -107,4 +107,5 @@ def test_collect_isolates_per_job_failures(conn, monkeypatch):
     out = cli.cmd_collect(conn, cfg, profile)
     assert out["errors"] == 1
     statuses = cli.cmd_status(conn)
-    assert statuses.get("ready_for_match", 0) + statuses.get("filtered_out", 0) + statuses.get("new", 0) >= 2
+    assert statuses.get("ready_for_match", 0) == 2
+    assert statuses.get("new", 0) == 1
