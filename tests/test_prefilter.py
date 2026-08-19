@@ -5,7 +5,9 @@ from conftest import REPO_ROOT
 from offerpilot.models import NormalizedJob
 from offerpilot.profile import load_profile
 from offerpilot import prefilter
-from offerpilot.prefilter import _rule_authorization, _rule_years
+from offerpilot.prefilter import (_rule_authorization,
+                                  _rule_graduation_window,
+                                  _rule_pay_floor, _rule_years)
 
 REAL_SNIPPETS = json.loads(
     (REPO_ROOT / "tests" / "fixtures" / "real_posting_snippets.json")
@@ -19,10 +21,15 @@ def make_job(description_text, location="New York, NY"):
                          description_text=description_text)
 
 
-def make_profile(work_authorization=None):
+def make_profile(work_authorization=None, graduation=None,
+                 pay_floor_hourly_usd=None):
     p = load_profile("profile.example.yaml")
     if work_authorization is not None:
         p.constraints.work_authorization = work_authorization
+    if graduation is not None:
+        p.identity.graduation = graduation
+    if pay_floor_hourly_usd is not None:
+        p.constraints.pay_floor_hourly_usd = pay_floor_hourly_usd
     return p
 
 
@@ -279,3 +286,117 @@ def test_clearance_cancelled_by_a_synonym_of_not_required_is_not_a_fail():
                  "is not necessary."):
         r = _rule_authorization(make_job(text), make_profile())
         assert r.outcome != "fail", text
+
+
+# --- Spec rules 5 and 6: graduation window and pay floor. The conservative
+# --- principle binds both: only a stated requirement that definitely excludes
+# --- the candidate may `fail`; ambiguity and negation stay `unknown`.
+
+def test_graduation_window_excluding_candidate_year_fails():
+    p = make_profile(graduation="2029-05")
+    job = make_job("Open to the class of 2025 and 2026 only.")
+    r = _rule_graduation_window(job, p)
+    assert r.outcome == "fail"
+    assert "2025" in r.extracted_value
+
+
+def test_graduation_window_including_candidate_year_passes():
+    p = make_profile(graduation="2029-05")
+    job = make_job("For students graduating in 2029.")
+    assert _rule_graduation_window(job, p).outcome == "pass"
+
+
+def test_graduation_range_spanning_candidate_year_passes():
+    p = make_profile(graduation="2029-05")
+    job = make_job("Graduating between 2027 and 2030.")
+    assert _rule_graduation_window(job, p).outcome == "pass"
+
+
+def test_no_graduation_statement_is_unknown():
+    p = make_profile(graduation="2029-05")
+    job = make_job("We build distributed systems.")
+    assert _rule_graduation_window(job, p).outcome == "unknown"
+
+
+def test_graduation_negation_is_unknown_not_fail():
+    p = make_profile(graduation="2029-05")
+    job = make_job("No graduation year restriction; we hired someone from "
+                   "the class of 2024.")
+    assert _rule_graduation_window(job, p).outcome == "unknown"
+
+
+def test_an_including_window_anywhere_prevents_the_fail():
+    """Contradictory windows are ambiguity, and ambiguity may not reject."""
+    p = make_profile(graduation="2029-05")
+    job = make_job("Class of 2026 preferred. We also welcome students "
+                   "graduating in 2029.")
+    assert _rule_graduation_window(job, p).outcome != "fail"
+
+
+def test_a_year_in_a_neighbouring_sentence_is_not_a_graduation_window():
+    """Marketing copy puts unrelated years next to the word 'graduating'."""
+    p = make_profile(graduation="2029-05")
+    job = make_job("Founded in 2015. We have hired graduating students from "
+                   "every background.")
+    assert _rule_graduation_window(job, p).outcome == "unknown"
+
+
+def test_graduation_rule_is_unknown_when_the_profile_year_is_unparseable():
+    p = make_profile(graduation="sometime soon")
+    job = make_job("Open to the class of 2025 and 2026 only.")
+    assert _rule_graduation_window(job, p).outcome == "unknown"
+
+
+def test_hourly_rate_below_floor_fails():
+    p = make_profile(pay_floor_hourly_usd=20)
+    job = make_job("Compensation: $14 - $16 per hour.")
+    r = _rule_pay_floor(job, p)
+    assert r.outcome == "fail"
+    assert r.extracted_value is not None
+
+
+def test_hourly_range_top_above_floor_passes():
+    p = make_profile(pay_floor_hourly_usd=20)
+    job = make_job("Pay: $18 - $28/hr depending on experience.")
+    assert _rule_pay_floor(job, p).outcome == "pass"
+
+
+def test_annual_salary_is_converted_at_2080_hours():
+    p = make_profile(pay_floor_hourly_usd=20)
+    low = make_job("Salary: $30,000 - $35,000 per year.")
+    high = make_job("Salary: $90,000 - $120,000 annually.")
+    assert _rule_pay_floor(low, p).outcome == "fail"
+    assert _rule_pay_floor(high, p).outcome == "pass"
+
+
+def test_equity_or_unparseable_pay_is_unknown():
+    p = make_profile(pay_floor_hourly_usd=20)
+    job = make_job("Competitive salary and equity.")
+    assert _rule_pay_floor(job, p).outcome == "unknown"
+
+
+def test_bare_dollar_amount_without_unit_is_unknown():
+    p = make_profile(pay_floor_hourly_usd=20)
+    job = make_job("We raised $12 million in Series A funding.")
+    assert _rule_pay_floor(job, p).outcome == "unknown"
+
+
+def test_the_highest_stated_rate_governs_the_pay_floor():
+    """A low figure elsewhere in the posting may not sink a qualifying range."""
+    p = make_profile(pay_floor_hourly_usd=20)
+    job = make_job("Interns start at $15/hr; this role pays $32 per hour.")
+    assert _rule_pay_floor(job, p).outcome == "pass"
+
+
+def test_run_prefilter_returns_all_six_rules():
+    p = make_profile()
+    names = {r.rule for r in prefilter.run_prefilter(make_job("Anything"), p)}
+    assert names == {"years_of_experience", "work_authorization", "location",
+                     "excluded_company", "graduation_window", "pay_floor"}
+
+
+def test_an_hour_phrasing_is_read_as_a_rate():
+    """'$22 an hour' is the same statement as '$22/hr'."""
+    p = make_profile(pay_floor_hourly_usd=20)
+    assert _rule_pay_floor(make_job("Pay is $22 an hour."), p).outcome == "pass"
+    assert _rule_pay_floor(make_job("Pay is $12 an hour."), p).outcome == "fail"

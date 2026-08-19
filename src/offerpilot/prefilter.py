@@ -249,7 +249,114 @@ def _rule_excluded(job: NormalizedJob, profile: Profile) -> FilterResult:
                        reason="not excluded")
 
 
-RULES = [_rule_years, _rule_authorization, _rule_location, _rule_excluded]
+# --- Spec rule 5: graduation-year window ----------------------------------
+# Only a stated window may reject, so the scan needs a phrase the posting ties
+# to graduating, and the years must sit in the *same sentence* as that phrase.
+# A fixed character window would let an unrelated year invent one ("Founded in
+# 2015. We have hired graduating students from every background.").
+_GRAD_STATEMENT = re.compile(
+    r"(?:graduat\w+|class of|degree conferred|completion of (?:your )?degree)",
+    re.I)
+_YEAR = re.compile(r"\b(20\d{2})\b")
+_GRAD_NEGATION = re.compile(
+    r"\b(?:no|not|without|any)\s+(?:\w+\s+){0,3}"
+    r"(?:graduation|class|year)\s*(?:year|restriction|requirement)?", re.I)
+_GRAD_WINDOW = 80
+
+# --- Spec rule 6: pay floor ------------------------------------------------
+# Both patterns demand an explicit unit: a bare "$12 million" is company news,
+# not compensation, and must never be read as a rate.
+_HOURLY = re.compile(
+    r"\$\s*(\d{1,3}(?:\.\d{1,2})?)\s*(?:(?:-|–|—|to)\s*\$?\s*"
+    r"(\d{1,3}(?:\.\d{1,2})?)\s*)?(?:usd\s*)?(?:/|per\s+|an\s+)\s*"
+    r"(?:hr|hour)\b", re.I)
+_ANNUAL = re.compile(
+    r"\$\s*(\d{2,3}(?:,\d{3})+|\d{5,7})\s*(?:(?:-|–|—|to)\s*\$?\s*"
+    r"(\d{2,3}(?:,\d{3})+|\d{5,7})\s*)?"
+    r"(?:usd\s*)?(?:(?:/|per\s+)\s*(?:yr|year)|annually|annualized|per annum)"
+    r"\b", re.I)
+_HOURS_PER_YEAR = 2080
+
+
+def _candidate_grad_year(profile: Profile) -> int | None:
+    m = _YEAR.search(profile.identity.graduation or "")
+    return int(m.group(1)) if m else None
+
+
+def _rule_graduation_window(job: NormalizedJob,
+                            profile: Profile) -> FilterResult:
+    """Fail only when the posting states a graduation window that excludes us.
+
+    Every graduation phrase is scanned, not just the first: a posting that
+    names one window and then widens it ("Class of 2026 preferred. We also
+    welcome students graduating in 2029") is ambiguous, and ambiguity may not
+    reject. An including window therefore wins outright, while an excluding
+    one is only held as a candidate until the scan ends.
+    """
+    grad_year = _candidate_grad_year(profile)
+    text = job.description_text
+    if grad_year is None:
+        return FilterResult(outcome="unknown", rule="graduation_window",
+                            reason="candidate graduation year not parseable")
+    excluding: tuple[int, int, str] | None = None
+    for m in _GRAD_STATEMENT.finditer(text):
+        window = _sentence_window(text, m.start(), m.end(), _GRAD_WINDOW)
+        if _GRAD_NEGATION.search(window):
+            continue
+        years = sorted({int(y) for y in _YEAR.findall(window)})
+        if not years:
+            continue
+        low, high = years[0], years[-1]
+        if low <= grad_year <= high:
+            return FilterResult(outcome="pass", rule="graduation_window",
+                                extracted_value=window.strip(),
+                                reason=f"window {low}-{high} includes "
+                                       f"{grad_year}")
+        if excluding is None:
+            excluding = (low, high, window.strip())
+    if excluding is not None:
+        low, high, window = excluding
+        return FilterResult(outcome="fail", rule="graduation_window",
+                            extracted_value=window,
+                            reason=f"window {low}-{high} excludes {grad_year}")
+    return FilterResult(outcome="unknown", rule="graduation_window",
+                        reason="no explicit graduation window parsed")
+
+
+def _rule_pay_floor(job: NormalizedJob, profile: Profile) -> FilterResult:
+    """Fail only when the top of every explicit pay figure is below the floor.
+
+    The highest figure in the posting governs, so a low aside ("interns start
+    at $15/hr") cannot sink a range that clears the floor.
+    """
+    floor = float(profile.constraints.pay_floor_hourly_usd)
+    text = job.description_text
+    best: tuple[float, str] | None = None
+    for m in _HOURLY.finditer(text):
+        top = float(m.group(2) or m.group(1))
+        if best is None or top > best[0]:
+            best = (top, m.group(0))
+    for m in _ANNUAL.finditer(text):
+        raw = (m.group(2) or m.group(1)).replace(",", "")
+        top = float(raw) / _HOURS_PER_YEAR
+        if best is None or top > best[0]:
+            best = (top, m.group(0))
+    if best is None:
+        return FilterResult(outcome="unknown", rule="pay_floor",
+                            reason="no explicit pay range parsed")
+    top, excerpt = best
+    if top < floor:
+        return FilterResult(outcome="fail", rule="pay_floor",
+                            extracted_value=excerpt,
+                            reason=f"top of range ${top:.2f}/hr below floor "
+                                   f"${floor:.2f}/hr")
+    return FilterResult(outcome="pass", rule="pay_floor",
+                        extracted_value=excerpt,
+                        reason=f"top of range ${top:.2f}/hr meets floor")
+
+
+RULES = [_rule_years, _rule_authorization, _rule_location, _rule_excluded,
+         _rule_graduation_window, _rule_pay_floor]
 
 
 def run_prefilter(job: NormalizedJob, profile: Profile) -> list[FilterResult]:
