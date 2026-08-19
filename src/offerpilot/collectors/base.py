@@ -16,8 +16,15 @@ def canonicalize_url(url: str) -> str:
 
 
 def strip_html(text: str) -> str:
+    # Greenhouse serves HTML-escaped HTML, so an entity inside it arrives
+    # escaped twice: "&amp;nbsp;" -> "&nbsp;" -> "\xa0". Two passes decode
+    # that and stop. A third pass would also decode "&amp;amp;nbsp;" -- what a
+    # posting that literally discusses `&nbsp;` looks like on the wire -- into
+    # whitespace, silently deleting prose; unbounded fixed-point unescaping
+    # deletes arbitrarily deep nestings. Two is the smallest bound that
+    # handles the real wire format, so it is the bound that loses least.
     unescaped = text
-    for _ in range(3):                     # bounded: Greenhouse double-escapes
+    for _ in range(2):
         once = html.unescape(unescaped)
         if once == unescaped:
             break

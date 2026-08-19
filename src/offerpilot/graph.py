@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 from offerpilot.models import MatchResult, total_score
 from offerpilot.profile import Profile
 from offerpilot.prompts import MATCH_SYSTEM, MATCH_USER
@@ -7,14 +8,44 @@ from offerpilot.store import db
 from offerpilot.llm import RetryableLLMError, PermanentLLMError, SpendCapExceeded
 
 
-_ZERO_WIDTH = re.compile(r"[\u200b-\u200f\u2060\ufeff]")
+# A forged delimiter only has to *look* like the real one to the model, so
+# matching it by exact bytes loses. Enumerating homoglyphs one at a time loses
+# too -- the fullwidth pair has a small-form sibling one codepoint away, and
+# the tag name can be broken up by characters that render as nothing at all.
+# Instead: fold compatibility variants (NFKC maps U+FF1C and U+FE64 alike to
+# "<"), delete every format character (Cf covers ZWSP/ZWNJ/BOM, SOFT HYPHEN and
+# INVISIBLE PLUS), and let the tag-name pattern tolerate stray separators such
+# as COMBINING GRAPHEME JOINER between its letters.
+_TAG = "untrusted_job_posting"
+# Bracket lookalikes accepted alongside ASCII "<"/">". NFKC already folds the
+# fullwidth (U+FF1C) and small-form (U+FE64) pairs down to ASCII; none of the
+# ones below ever reach ASCII, so they are listed out.
+_OPENERS = "<\u2039\u00ab\u3008\u300a\u2329\u276e\u2770"
+_CLOSERS = ">\u203a\u00bb\u3009\u300b\u232a\u276f\u2771"
+
+# Junk permitted between the letters of the tag name. Excluding alphanumerics
+# and brackets makes every gap disjoint from the literal that follows it, so
+# the pattern matches without backtracking.
+_GAP = r"[^0-9A-Za-z" + re.escape(_OPENERS + _CLOSERS) + r"]{0,4}"
+# The underscores are dropped from the literal and absorbed by _GAP, so
+# "untrusted job posting" and "untrustedjobposting" are caught as well.
+_NAME = _GAP.join(re.escape(c) for c in _TAG.replace("_", ""))
+
+# The closing bracket is optional: an unclosed "<untrusted_job_posting" is
+# still a forgery attempt. When it is present, only 64 characters of attribute
+# junk may precede it, so a stray bracket far downstream cannot make the
+# substitution swallow real job text.
 _DELIM_RE = re.compile(
-    r"[<\uff1c]\s*/?\s*untrusted_job_posting[^>\uff1e]*[>\uff1e]", re.I)
+    "[" + re.escape(_OPENERS) + "]" + _GAP + "/?" + _GAP + _NAME
+    + "(?:[^" + re.escape(_CLOSERS) + "]{0,64}[" + re.escape(_CLOSERS) + "])?",
+    re.I)
 
 
 def _sanitize(text: str) -> str:
-    stripped = _ZERO_WIDTH.sub("", text or "")
-    return _DELIM_RE.sub("[tag-removed]", stripped)
+    folded = unicodedata.normalize(
+        "NFKC", "".join(ch for ch in (text or "")
+                        if unicodedata.category(ch) != "Cf"))
+    return _DELIM_RE.sub("[tag-removed]", folded)
 
 
 def build_prompts(job_row, profile: Profile):
@@ -67,7 +98,17 @@ def make_evidence_validator(profile: Profile, threshold: int):
                 f"evidence source_id {bad} do not exist. Valid ids are: "
                 f"{sorted(valid)}. Cite only these, or return an empty "
                 f"evidence list and a lower score.")
-        if not result.evidence and total_score(result) >= threshold:
+        # Only jobs the model considers viable can reach review, so only they
+        # need profile citations. When eligibility is "fail" the posting is
+        # the evidence -- MatchResult already requires
+        # eligibility_evidence_excerpt for that verdict -- and citing no
+        # experience is the natural, correct answer. Demanding one anyway
+        # threw a well-formed result away and parked the version on
+        # permanent_error, which db.ALLOWED_TRANSITIONS only lets a human
+        # reverse by hand. Keep this guard if this validator moves into the
+        # LLM repair loop.
+        if (result.eligibility != "fail" and not result.evidence
+                and total_score(result) >= threshold):
             raise ValueError(
                 "a score at or above the review threshold must cite at least "
                 "one evidence source_id from the profile. Either cite the "

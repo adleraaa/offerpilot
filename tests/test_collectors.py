@@ -63,5 +63,14 @@ def test_strip_html_is_idempotent_on_plain_text():
 
 
 def test_strip_html_does_not_unescape_forever():
-    """A literal ampersand in prose must survive."""
+    """The unescape bound must actually bind.
+
+    A posting that literally discusses `&nbsp;` arrives from a board that
+    escapes its HTML once, so it reaches us as `&amp;amp;nbsp;`. Two passes
+    stop at `&nbsp;` and the prose survives; a third pass -- or unbounded
+    fixed-point unescaping -- silently turns it into whitespace and the text
+    is gone. "Research &amp; Development" is the single-escape base case: it
+    reaches its fixed point after one pass, so it pins nothing on its own.
+    """
+    assert strip_html("&amp;amp;nbsp;") == "&nbsp;"
     assert "&" in strip_html("Research &amp; Development")
