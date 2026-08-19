@@ -7,11 +7,14 @@ from offerpilot.store import db
 from offerpilot.llm import RetryableLLMError, PermanentLLMError, SpendCapExceeded
 
 
-_DELIM_RE = re.compile(r"<\s*/?\s*untrusted_job_posting[^>]*>", re.I)
+_ZERO_WIDTH = re.compile(r"[\u200b-\u200f\u2060\ufeff]")
+_DELIM_RE = re.compile(
+    r"[<\uff1c]\s*/?\s*untrusted_job_posting[^>\uff1e]*[>\uff1e]", re.I)
 
 
 def _sanitize(text: str) -> str:
-    return _DELIM_RE.sub("[tag-removed]", text or "")
+    stripped = _ZERO_WIDTH.sub("", text or "")
+    return _DELIM_RE.sub("[tag-removed]", stripped)
 
 
 def build_prompts(job_row, profile: Profile):
@@ -49,6 +52,30 @@ def _log_step(conn, run_id, node, attempt, status, input=None, output=None,
     conn.commit()
 
 
+def make_evidence_validator(profile: Profile, threshold: int):
+    """Reject semantically wrong MatchResults by raising ValueError.
+
+    Task 3 hands this to `LLMClient.structured(validate=...)` so the model gets
+    a repair turn; until then `run_match_for_version` calls it post-hoc.
+    """
+    valid = profile.experience_ids()
+
+    def _validate(result: MatchResult) -> None:
+        bad = [e.source_id for e in result.evidence if e.source_id not in valid]
+        if bad:
+            raise ValueError(
+                f"evidence source_id {bad} do not exist. Valid ids are: "
+                f"{sorted(valid)}. Cite only these, or return an empty "
+                f"evidence list and a lower score.")
+        if not result.evidence and total_score(result) >= threshold:
+            raise ValueError(
+                "a score at or above the review threshold must cite at least "
+                "one evidence source_id from the profile. Either cite the "
+                "experience that justifies the score, or lower the subscores.")
+
+    return _validate
+
+
 def run_match_for_version(conn, llm, profile: Profile, version_row,
                           threshold: int, max_auto_retries: int,
                           run_meta: dict | None = None) -> str:
@@ -60,14 +87,15 @@ def run_match_for_version(conn, llm, profile: Profile, version_row,
     run_id = _start_run(conn, vid, run_meta)
     system, user = build_prompts(version_row, profile)
     prompt_input = json.dumps({"system": system, "user": user})
+    validate_evidence = make_evidence_validator(profile, threshold)
     try:
         result: MatchResult = llm.structured(
             node="match", run_id=run_id, system=system, user=user,
             schema=MatchResult)
-        bad = [e.source_id for e in result.evidence
-               if e.source_id not in profile.experience_ids()]
-        if bad:
-            raise PermanentLLMError(f"invented evidence ids: {bad}")
+        try:
+            validate_evidence(result)
+        except ValueError as e:
+            raise PermanentLLMError(str(e)) from e
     except SpendCapExceeded as e:
         _log_step(conn, run_id, "match", attempt, "spend_cap",
                   input=prompt_input, error=str(e))

@@ -16,7 +16,12 @@ def canonicalize_url(url: str) -> str:
 
 
 def strip_html(text: str) -> str:
-    unescaped = html.unescape(text)
+    unescaped = text
+    for _ in range(3):                     # bounded: Greenhouse double-escapes
+        once = html.unescape(unescaped)
+        if once == unescaped:
+            break
+        unescaped = once
     no_tags = re.sub(r"<[^>]+>", " ", unescaped)
     collapsed = re.sub(r"\s+", " ", no_tags).strip()
     return re.sub(r"\s+([.,;:!?])", r"\1", collapsed)

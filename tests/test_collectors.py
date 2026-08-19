@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from offerpilot.collectors import base, greenhouse, lever
+from offerpilot.collectors.base import strip_html
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -45,3 +46,22 @@ def test_lever_parse():
     assert j.location == "New York City"
     assert j.canonical_url.endswith("/ab12-cd34")
     assert j.posted_at.startswith("2025-07-01")
+
+
+def test_strip_html_handles_double_escaped_greenhouse_content():
+    """Greenhouse serves escaped HTML: one unescape leaves entities behind."""
+    raw = "&lt;p&gt;Build things&amp;nbsp;with us&lt;/p&gt;"
+    out = strip_html(raw)
+    assert "&nbsp;" not in out
+    assert "&amp;" not in out
+    assert "<p>" not in out
+    assert "Build things with us" in out
+
+
+def test_strip_html_is_idempotent_on_plain_text():
+    assert strip_html("Plain text, no markup.") == "Plain text, no markup."
+
+
+def test_strip_html_does_not_unescape_forever():
+    """A literal ampersand in prose must survive."""
+    assert "&" in strip_html("Research &amp; Development")
