@@ -9,6 +9,13 @@ from offerpilot.graph import run_match_for_version
 from offerpilot.llm import LLMClient, SpendCapExceeded
 
 
+def _company_label(company) -> str:
+    """A printable identifier that works even for a malformed config entry."""
+    if isinstance(company, dict):
+        return str(company.get("id") or "<entry with no id>")
+    return repr(company)
+
+
 def _collect_company(company, cfg):
     if company["ats"] == "greenhouse":
         return greenhouse.parse(greenhouse.fetch(company["ats_slug"]),
@@ -20,15 +27,24 @@ def _collect_company(company, cfg):
 
 
 def cmd_collect(conn, cfg, profile, limit=None) -> dict:
-    db.upsert_companies(conn, cfg.get("companies", []))
+    companies = cfg.get("companies", [])
+    # Recording companies must never cost the batch: one malformed config
+    # entry is a per-company error below, not a whole-run abort.
+    try:
+        written = db.upsert_companies(conn, companies)
+        if written < len(companies):
+            print(f"[collect] {len(companies) - written} company entries "
+                  f"skipped: no 'id'")
+    except Exception as e:
+        print(f"[collect] could not record companies: {type(e).__name__}: {e}")
     inserted = errors = seen = 0
-    for company in cfg.get("companies", []):
+    for company in companies:
         if limit is not None and seen >= limit:
             break
         try:
             jobs = _collect_company(company, cfg)
         except Exception as e:
-            print(f"[collect] {company['id']} failed: {e}")
+            print(f"[collect] {_company_label(company)} failed: {e}")
             errors += 1
             continue
         for job in jobs:
@@ -44,10 +60,11 @@ def cmd_collect(conn, cfg, profile, limit=None) -> dict:
                 db.record_filter_results(conn, vid, results)
                 db.set_status(conn, vid, prefilter.decide(results))
             except Exception as e:
-                print(f"[collect] job {job.external_id} ({company['id']}) failed: {e}")
+                print(f"[collect] job {job.external_id} "
+                      f"({_company_label(company)}) failed: {e}")
                 errors += 1
     return {"inserted": inserted,
-            "companies": len(cfg.get("companies", [])), "errors": errors}
+            "companies": len(companies), "errors": errors}
 
 
 def cmd_match(conn, cfg, profile, llm, limit=None, run_meta=None) -> dict:

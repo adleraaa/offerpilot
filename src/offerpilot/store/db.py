@@ -178,12 +178,26 @@ def record_filter_results(conn, version_id: int,
 
 
 def upsert_companies(conn: sqlite3.Connection, companies: list[dict]) -> int:
+    """Record config-declared companies; returns how many were written.
+
+    `companies` comes from user-authored YAML that nothing schema-validates,
+    so entries are tolerated rather than trusted.  A bare `name:` parses to
+    None -- the key exists, so a `.get(k, default)` default never fires --
+    and companies.name is NOT NULL, so the name falls back to the id.  An
+    entry with no usable id is skipped rather than aborting the write for its
+    well-formed siblings; the caller reports the shortfall.
+    """
+    rows = []
+    for c in companies:
+        cid = c.get("id") if isinstance(c, dict) else None
+        if not cid:
+            continue
+        rows.append((str(cid), c.get("name") or str(cid)))
     conn.executemany(
         "INSERT INTO companies(id, name) VALUES(?,?) "
-        "ON CONFLICT(id) DO UPDATE SET name=excluded.name",
-        [(c["id"], c.get("name", c["id"])) for c in companies])
+        "ON CONFLICT(id) DO UPDATE SET name=excluded.name", rows)
     conn.commit()
-    return len(companies)
+    return len(rows)
 
 
 def record_label(conn: sqlite3.Connection, version_id: int, *,
