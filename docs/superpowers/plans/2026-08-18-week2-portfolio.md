@@ -688,6 +688,7 @@ def _start_run(conn, version_id, run_meta=None):
 ```
 
 `run_match_for_version` gains `run_meta: dict | None = None` and forwards it.
+Task 5 keeps this parameter when it rewrites the function around the graph.
 
 - [ ] **Step 7: Rewrite the CLI's `main` and `cmd_match`**
 
@@ -1744,22 +1745,17 @@ Replace `structured` with:
 
 - [ ] **Step 4: Move evidence validation into the repair loop (`graph.py`)**
 
-Add the factory and use it; delete the old post-hoc `bad = [...]` check:
-
-```python
-def make_evidence_validator(profile: Profile):
-    valid = profile.experience_ids()
-
-    def _validate(result: MatchResult) -> None:
-        bad = [e.source_id for e in result.evidence if e.source_id not in valid]
-        if bad:
-            raise ValueError(
-                f"evidence source_id {bad} do not exist. Valid ids are: "
-                f"{sorted(valid)}. Cite only these, or return an empty "
-                f"evidence list.")
-
-    return _validate
-```
+> **This function already exists** — Task C created it as
+> `make_evidence_validator(profile, threshold)` with a second guard (a score at
+> or above the threshold must cite something, unless `eligibility == "fail"`).
+> **Do not replace it with a one-argument version and do not drop the second
+> guard** — that regresses Task C and breaks
+> `test_match_with_no_evidence_does_not_reach_review`. Read the current
+> definition in `src/offerpilot/graph.py` and leave its body alone.
+>
+> The only change this task needs is at the *call site*: stop calling the
+> validator post-hoc and hand it to the client instead, so a bad citation gets
+> a repair turn rather than an immediate `permanent_error`.
 
 In `run_match_for_version`, the `try` block becomes:
 
@@ -1767,7 +1763,7 @@ In `run_match_for_version`, the `try` block becomes:
     try:
         result: MatchResult = llm.structured(
             node="match", run_id=run_id, system=system, user=user,
-            schema=MatchResult, validate=make_evidence_validator(profile))
+            schema=MatchResult, validate=validate_evidence)
     except AuthLLMError as e:
         _log_step(conn, run_id, "match", attempt, "auth_error",
                   input=prompt_input, error=str(e))
@@ -1830,19 +1826,29 @@ In `cmd_match`, add the auth branch next to the spend-cap branch:
 
 In `cmd_retry`, sweep orphans too, and return a breakdown:
 
+> **`cmd_retry` was already rewritten by Task B** to go through
+> `db.set_status` instead of a raw `UPDATE`, because
+> `permanent_error -> ready_for_match` is now a legal, enforced transition.
+> **Do not reintroduce the raw UPDATE** — it bypasses the state machine and
+> breaks `test_retry_uses_the_state_machine`. The only change here is adding
+> the orphan sweep:
+
 ```python
 def cmd_retry(conn, profile) -> dict:
     stale = db.sweep_stale_matching(conn)
-    orphans = db.sweep_stuck_new(conn, profile)
-    cur = conn.execute(
-        "UPDATE job_versions SET status='ready_for_match', attempt_count=0 "
-        "WHERE status='permanent_error'")
-    conn.commit()
-    return {"reset": cur.rowcount, "stale_swept": stale,
+    orphans = db.sweep_stuck_new(conn, profile)     # <-- the only new line
+    reset = 0
+    for row in db.get_versions_by_status(conn, "permanent_error"):
+        db.set_status(conn, row["id"], "ready_for_match")
+        conn.execute("UPDATE job_versions SET attempt_count=0 WHERE id=?",
+                     (row["id"],))
+        conn.commit()
+        reset += 1
+    return {"reset": reset, "stale_swept": stale,
             "orphans_prefiltered": orphans}
 ```
 
-Update its call site in `main` to `print(cmd_retry(conn, profile))`, and add
+Its call site in `main` already reads `print(cmd_retry(conn, profile))`. Add
 `db.sweep_stuck_new(conn, profile)` at the start of the `collect` branch so a
 crashed run self-heals on the next collect.
 
@@ -2263,9 +2269,9 @@ def test_brief_failure_still_leaves_the_job_reviewable(conn, profile,
     assert steps["brief"] == "brief_failed"
 ```
 
-Add to `tests/conftest.py` (create the file if it does not exist) the shared
-fixtures `conn`, `profile`, `scoring_llm`, and the helpers `_ready_row` /
-`_make_job`, moved out of `tests/test_graph.py` so both modules share them:
+**`tests/conftest.py` already contains all of this** — Tasks A and B created
+it. Read the file and confirm the fixtures below are present and equivalent;
+**do not paste a second copy**. It is reproduced here only so you can check it:
 
 ```python
 import pytest
@@ -2485,13 +2491,14 @@ discipline and error mapping, and delegates the happy path to the graph:
 ```python
 def run_match_for_version(conn, llm, profile: Profile, version_row,
                           threshold: int, max_auto_retries: int,
-                          brief_enabled: bool = True) -> str:
+                          brief_enabled: bool = True,
+                          run_meta: dict | None = None) -> str:
     vid = version_row["id"]
     attempt = version_row["attempt_count"] + 1
     conn.execute("UPDATE job_versions SET attempt_count=? WHERE id=?",
                  (attempt, vid))
     db.set_status(conn, vid, "matching")
-    run_id = _start_run(conn, vid)
+    run_id = _start_run(conn, vid, run_meta)
     ctx = GraphContext(conn=conn, llm=llm, profile=profile,
                        threshold=threshold,
                        max_auto_retries=max_auto_retries,
