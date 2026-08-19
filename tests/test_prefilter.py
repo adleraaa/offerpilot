@@ -187,3 +187,95 @@ def test_rules_catch_the_recorded_real_postings():
         rule = {"years_of_experience": _rule_years,
                 "work_authorization": _rule_authorization}[case["rule"]]
         assert rule(job, p).outcome == case["expected"], case["text"][:80]
+
+
+# --- Review findings: the years rule must not reject on years that are not
+# --- evidence about the candidate's own experience.
+
+def test_age_minimum_is_not_an_experience_requirement():
+    for text in ("Requirements: Must be at least 18 years of age and legally "
+                 "able to work.",
+                 "You must be at least 21 years of age to apply."):
+        assert _rule_years(make_job(text), make_profile()).outcome != "fail", text
+
+
+def test_licence_and_record_tenure_are_not_experience():
+    for text in ("Requirements: valid driver's license held for at least "
+                 "3 years.",
+                 "Minimum Qualifications: must have a clean driving record "
+                 "for 5 years."):
+        assert _rule_years(make_job(text), make_profile()).outcome != "fail", text
+
+
+def test_degree_recency_window_is_not_an_experience_requirement():
+    """Actively inverted before the fix: this posting is recent-grad friendly."""
+    job = make_job("This is an entry-level role. Requirements: BS degree "
+                   "within the last 3 years.")
+    assert _rule_years(job, make_profile()).outcome != "fail"
+
+
+def test_years_offered_as_one_alternative_is_not_a_hard_requirement():
+    job = make_job("At least one of the following: 3 years in Python OR a "
+                   "relevant degree.")
+    assert _rule_years(job, make_profile()).outcome != "fail"
+
+
+def test_open_ended_years_in_a_field_under_a_requirement_header_still_fails():
+    """The corpus shape that states an experience bar without the noun."""
+    for text in ("Qualifications Required 8+ years in cybersecurity, with a "
+                 "record of leading engineers.",
+                 "Must-Have Qualifications 6+ years in product management."):
+        assert _rule_years(make_job(text), make_profile()).outcome == "fail", text
+
+
+def test_preference_header_governs_across_a_sentence_break():
+    """The real posting puts an unrelated sentence between header and bullet."""
+    job = make_job("Ideally you'd have: JD and a member of the California Bar "
+                   "in good standing. At least 9+ years of combined law firm "
+                   "and in-house experience.")
+    assert _rule_years(job, make_profile()).outcome != "fail"
+
+
+def test_a_later_requirement_header_overrides_an_earlier_preference_header():
+    job = make_job("Nice to have: Docker. Requirements: 5+ years of "
+                   "professional experience.")
+    assert _rule_years(job, make_profile()).outcome == "fail"
+
+
+# --- Review findings: a requirement word about something else must not bind
+# --- to a clearance term further along the same sentence.
+
+def test_unrelated_requirement_does_not_bind_the_clearance():
+    for text in ("A degree is required, and a security clearance is a plus.",
+                 "Experience in classified environments required; an active "
+                 "security clearance is preferred.",
+                 "US work authorization is required, though a security "
+                 "clearance is not necessary."):
+        r = _rule_authorization(make_job(text), make_profile())
+        assert r.outcome != "fail", text
+
+
+def test_clearance_preferred_but_not_required_is_not_a_fail():
+    job = make_job("Security clearance preferred but not required.")
+    assert _rule_authorization(job, make_profile()).outcome != "fail"
+
+
+def test_clearance_required_before_the_term_still_fails():
+    for text in ("Must have: At least an active TS/SCI clearance and the "
+                 "ability to up level to CI Poly.",
+                 "This role will require at minimum an active Secret "
+                 "clearance and willingness to obtain a TS/SCI clearance.",
+                 "This role will require an active security clearance"):
+        r = _rule_authorization(make_job(text), make_profile())
+        assert r.outcome == "fail", text
+
+
+def test_clearance_cancelled_by_a_synonym_of_not_required_is_not_a_fail():
+    """A requirement word can legitimately bind inside the clause and still be
+    cancelled: the veto must not key on the single word "required"."""
+    for text in ("We require US citizenship but a security clearance is not "
+                 "needed.",
+                 "You must have strong Python skills and a security clearance "
+                 "is not necessary."):
+        r = _rule_authorization(make_job(text), make_profile())
+        assert r.outcome != "fail", text

@@ -1,9 +1,21 @@
 [
   {
-    "text": "At least 9+ years of combined law firm and in-house experience with training in commercial agreements, data licensing, and intellectual property.",
+    "text": "Ideally you'd have: JD and a member of the California Bar in good standing. At least 9+ years of combined law firm and in-house experience with training in commercial agreements, data licensing, and intellectual property.",
     "rule": "years_of_experience",
-    "expected": "fail",
-    "why": "'At least 9+ years ... experience' states a hard minimum in its own words."
+    "expected": "unknown",
+    "why": "In the posting this came from (Associate General Counsel, Commercial) 'Ideally you'd have:' heads the whole list; the sentence break after 'in good standing.' is a bullet boundary, not a change of framing. Same construct as the next entry, which is the sibling posting."
+  },
+  {
+    "text": "Ideally you'd have: At least 8+ years of experience in-house and at a top law firm, ideally both managing at least a portion of an IP portfolio and product counseling.",
+    "rule": "years_of_experience",
+    "expected": "unknown",
+    "why": "Sibling posting (Associate General Counsel, Product & IP): same employer, same header, same requirement, no intervening period. Paired with the entry above so punctuation cannot decide the verdict."
+  },
+  {
+    "text": "Willingness to travel up to 50% Ideally you’d have:&nbsp; Minimum 8+ years experience in event marketing or event management with Federal marketing Experience managing large scale events, end to end",
+    "rule": "years_of_experience",
+    "expected": "unknown",
+    "why": "Field Marketing & Events Lead: 'Ideally you'd have:' heads the list and 'Minimum' is a quantifier on its own bullet, not a new section label, so the preference framing still governs."
   },
   {
     "text": "Requirements: At least 5 years of relevant experience and at least 2+ years of experience managing infrastructure or platform teams.",
