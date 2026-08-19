@@ -2,6 +2,7 @@ import json
 import pytest
 from pydantic import BaseModel
 from offerpilot.store import db
+from offerpilot.models import MatchResult
 from offerpilot.llm import (LLMClient, PermanentLLMError, SpendCapExceeded,
                             RetryableLLMError)
 
@@ -123,7 +124,12 @@ def test_other_sdk_error_is_permanent(conn):
 
 
 def test_cap_rechecked_between_attempts(conn):
-    tight = dict(CFG, daily_spend_cap_usd=0.00005)
+    # The cap is now checked with a pre-call estimate, so the cap has to be
+    # large enough for attempt 1's *predicted* cost and small enough that
+    # attempt 1's *actual* cost pushes the next prediction over the line.
+    est = (2 / 4 * 0.27 + 1000 * 1.10) / 1e6      # estimate for system/user "s"/"u"
+    actual = (100 * 0.27 + 50 * 1.10) / 1e6       # what FakeCompletion reports
+    tight = dict(CFG, daily_spend_cap_usd=est + actual / 2)
     cli = LLMClient(conn, tight, "k",
                     client=FakeSDK(["nope", "nope", "nope"]))
     with pytest.raises(SpendCapExceeded):
@@ -139,3 +145,42 @@ def test_usage_row_content(conn):
     assert row["model"] == "deepseek-chat" and row["node"] == "match"
     assert row["prompt_tokens"] == 100 and row["completion_tokens"] == 50
     assert row["estimated_cost_usd"] > 0
+
+
+@pytest.fixture()
+def cfg():
+    return dict(CFG)
+
+
+def test_malformed_usage_is_a_permanent_error_not_an_attribute_error(conn, cfg):
+    """Response parsing must live inside the client's error mapping."""
+    class NoUsage:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": self})()
+
+        def create(self, **kw):
+            return type("R", (), {"choices": [], "usage": None})()
+
+    llm = LLMClient(conn, cfg, "k", client=NoUsage())
+    with pytest.raises(PermanentLLMError):
+        llm.structured(node="match", run_id=None, system="s", user="u",
+                       schema=MatchResult)
+
+
+def test_pre_call_estimate_blocks_a_call_that_would_breach_the_cap(conn, cfg):
+    cfg = dict(cfg, daily_spend_cap_usd=0.0001)
+    calls = []
+
+    class Counting:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": self})()
+
+        def create(self, **kw):
+            calls.append(1)
+            raise AssertionError("should never be called")
+
+    llm = LLMClient(conn, cfg, "k", client=Counting())
+    with pytest.raises(SpendCapExceeded):
+        llm.structured(node="match", run_id=None, system="s" * 40000,
+                       user="u" * 40000, schema=MatchResult)
+    assert calls == []

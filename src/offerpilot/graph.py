@@ -23,10 +23,12 @@ def build_prompts(job_row, profile: Profile):
     return MATCH_SYSTEM, user
 
 
-def _start_run(conn, version_id):
+def _start_run(conn, version_id, run_meta=None):
+    meta = run_meta or {}
     cur = conn.execute(
-        "INSERT INTO runs(run_type, job_version_id, status) "
-        "VALUES('graph', ?, 'running') RETURNING id", (version_id,))
+        "INSERT INTO runs(run_type, job_version_id, status, git_commit, "
+        "config_hash) VALUES('graph', ?, 'running', ?, ?) RETURNING id",
+        (version_id, meta.get("git_commit"), meta.get("config_hash")))
     run_id = cur.fetchone()["id"]
     conn.commit()
     return run_id
@@ -48,13 +50,14 @@ def _log_step(conn, run_id, node, attempt, status, input=None, output=None,
 
 
 def run_match_for_version(conn, llm, profile: Profile, version_row,
-                          threshold: int, max_auto_retries: int) -> str:
+                          threshold: int, max_auto_retries: int,
+                          run_meta: dict | None = None) -> str:
     vid = version_row["id"]
     attempt = version_row["attempt_count"] + 1
     conn.execute("UPDATE job_versions SET attempt_count=? WHERE id=?",
                  (attempt, vid))
     db.set_status(conn, vid, "matching")
-    run_id = _start_run(conn, vid)
+    run_id = _start_run(conn, vid, run_meta)
     system, user = build_prompts(version_row, profile)
     prompt_input = json.dumps({"system": system, "user": user})
     try:

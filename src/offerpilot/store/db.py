@@ -66,6 +66,7 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "matching": {"eligibility_failed", "scored_low", "pending_review",
                  "retryable_error", "permanent_error"},
     "retryable_error": {"ready_for_match", "permanent_error"},
+    "permanent_error": {"ready_for_match"},   # manual reset, spec section
     "pending_review": {"approved", "rejected", "saved"},
 }
 

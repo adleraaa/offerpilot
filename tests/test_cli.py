@@ -64,12 +64,12 @@ def test_status_counts(conn):
     assert cli.cmd_status(conn) == {"new": 2}
 
 
-def test_retry_resets_permanent(conn):
+def test_retry_resets_permanent(conn, profile):
     _, v = seed(conn)
     db.set_status(conn, v, "ready_for_match")
     db.set_status(conn, v, "matching")
     db.set_status(conn, v, "permanent_error")
-    assert cli.cmd_retry(conn) == 1
+    assert cli.cmd_retry(conn, profile)["reset"] == 1
     assert cli.cmd_status(conn) == {"ready_for_match": 1}
 
 
@@ -109,3 +109,87 @@ def test_collect_isolates_per_job_failures(conn, monkeypatch):
     statuses = cli.cmd_status(conn)
     assert statuses.get("ready_for_match", 0) == 2
     assert statuses.get("new", 0) == 1
+
+
+def test_match_limit_stops_after_n_jobs(conn, profile, scoring_llm):
+    from offerpilot.cli import cmd_match
+    from conftest import _ready_row
+    for i in range(5):
+        _ready_row(conn, str(i))
+    cfg = {"match": {"score_threshold": 60, "max_auto_retries": 3}}
+    counts = cmd_match(conn, cfg, profile, scoring_llm(90), limit=2)
+    assert sum(counts.values()) == 2
+
+
+def test_one_malformed_response_does_not_kill_the_batch(conn, profile):
+    """A single bad job must not cost us the other 190."""
+    from offerpilot.cli import cmd_match
+    from conftest import _ready_row
+    from offerpilot.models import MatchResult, EvidenceRef
+
+    class FlakyLLM:
+        def __init__(self):
+            self.n = 0
+
+        def structured(self, *, node, run_id, system, user, schema,
+                       validate=None):
+            self.n += 1
+            if self.n == 1:
+                raise AttributeError("'NoneType' object has no attribute "
+                                     "'prompt_tokens'")
+            return MatchResult(
+                eligibility="pass", skills_score=30, project_score=20,
+                domain_score=15, seniority_score=15, preference_score=20,
+                evidence=[EvidenceRef(source_id="pathpilot",
+                                      supporting_text="x")],
+                confidence=0.9)
+
+    for i in range(3):
+        _ready_row(conn, str(i))
+    cfg = {"match": {"score_threshold": 60, "max_auto_retries": 3}}
+    counts = cmd_match(conn, cfg, profile, FlakyLLM())
+    assert counts.get("pending_review") == 2
+
+
+def test_config_fallback_warns(capsys, tmp_path, monkeypatch):
+    from offerpilot.config import load_config
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.example.yaml").write_text("llm: {}\n", encoding="utf-8")
+    load_config("config.yaml")
+    assert "config.example.yaml" in capsys.readouterr().out
+
+
+def test_config_strict_mode_refuses_to_fall_back(tmp_path, monkeypatch):
+    from offerpilot.config import load_config
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.example.yaml").write_text("llm: {}\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        load_config("config.yaml", strict=True)
+
+
+def test_retry_uses_the_state_machine(conn, profile):
+    """permanent_error -> ready_for_match must be a legal, recorded transition."""
+    from offerpilot.cli import cmd_retry
+    from offerpilot.store.db import ALLOWED_TRANSITIONS
+    assert "ready_for_match" in ALLOWED_TRANSITIONS["permanent_error"]
+    from conftest import _ready_row
+    row = _ready_row(conn)
+    from offerpilot.store import db
+    db.set_status(conn, row["id"], "matching")
+    db.set_status(conn, row["id"], "permanent_error")
+    assert cmd_retry(conn, profile)["reset"] == 1
+    assert conn.execute("SELECT status, attempt_count FROM job_versions "
+                        "WHERE id=?", (row["id"],)).fetchone()["status"] == \
+        "ready_for_match"
+
+
+def test_run_records_git_commit_and_config_hash(conn, profile, scoring_llm):
+    from offerpilot.graph import run_match_for_version
+    from conftest import _ready_row
+    row = _ready_row(conn)
+    run_match_for_version(conn, scoring_llm(90), profile, row, threshold=60,
+                          max_auto_retries=3,
+                          run_meta={"git_commit": "abc123",
+                                    "config_hash": "def456"})
+    r = conn.execute("SELECT git_commit, config_hash FROM runs").fetchone()
+    assert r["git_commit"] == "abc123" and r["config_hash"] == "def456"
