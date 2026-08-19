@@ -1,0 +1,152 @@
+[
+  {
+    "text": "At least 9+ years of combined law firm and in-house experience with training in commercial agreements, data licensing, and intellectual property.",
+    "rule": "years_of_experience",
+    "expected": "fail",
+    "why": "'At least 9+ years ... experience' states a hard minimum in its own words."
+  },
+  {
+    "text": "Requirements: At least 5 years of relevant experience and at least 2+ years of experience managing infrastructure or platform teams.",
+    "rule": "years_of_experience",
+    "expected": "fail",
+    "why": "Under 'Requirements:', 'At least 5 years of relevant experience'."
+  },
+  {
+    "text": "Requirements: Experience: 10+ years of experience in complex enterprise IT sales or business development specifically within the DoW/IC.",
+    "rule": "years_of_experience",
+    "expected": "fail",
+    "why": "Under 'Requirements:', '10+ years of experience' in the named field."
+  },
+  {
+    "text": "What we're looking for Required 5+ years of software engineering experience, ideally in customer-facing, forward-deployed, or government contexts.",
+    "rule": "years_of_experience",
+    "expected": "fail",
+    "why": "'Required 5+ years of software engineering experience'; the later 'ideally' modifies the domain, not the requirement."
+  },
+  {
+    "text": "Qualifications Required 8+ years in cybersecurity (security engineering, product security, detection/response, or cloud security), with at least 4 years leading or formally mentoring engineers in high-growth or enterpris",
+    "rule": "years_of_experience",
+    "expected": "fail",
+    "why": "'Required 8+ years in cybersecurity' - explicit requirement, no 'experience' noun needed."
+  },
+  {
+    "text": "&nbsp; Requirements: 3–6+ years of experience in Federal proposals management, ideally with technology, defense, or AI/ML organizations.",
+    "rule": "years_of_experience",
+    "expected": "fail",
+    "why": "Under 'Requirements:', a 3-6+ year range; the floor is above the candidate's reach."
+  },
+  {
+    "text": "Minimum Qualifications 5+ years of experience as a Technical Program Manager, Product Manager, or Software Engineer, with a proven track record of having built and shipped technical products or platforms from scratch (e.",
+    "rule": "years_of_experience",
+    "expected": "fail",
+    "why": "'Minimum Qualifications 5+ years of experience'."
+  },
+  {
+    "text": "Requirements 5+ years of experience in developing backend services.",
+    "rule": "years_of_experience",
+    "expected": "fail",
+    "why": "'Requirements 5+ years of experience'."
+  },
+  {
+    "text": "For 10 years, Scale has been the leading AI data foundry, helping fuel the most exciting advancements in AI, including: generative AI, defense applications, and autonomous vehicles.",
+    "rule": "years_of_experience",
+    "expected": "unknown",
+    "why": "Company history ('For 10 years, Scale has been...'), not a candidate requirement."
+  },
+  {
+    "text": "&nbsp; Ideally you'd have: 4+ years of experience building large-scale, high-performance backend systems.",
+    "rule": "years_of_experience",
+    "expected": "unknown",
+    "why": "'Ideally you'd have' frames the whole list as a preference, not a requirement."
+  },
+  {
+    "text": "Requirements: At least 2 years of relevant experience is preferred Proven track record of shipping high-quality products and features at scale.",
+    "rule": "years_of_experience",
+    "expected": "unknown",
+    "why": "'At least 2 years ... is preferred' - the requirement word is cancelled by 'preferred' in the same clause."
+  },
+  {
+    "text": "Ideally, You’d Have 7+ years of experience in cybersecurity compliance, GRC, public sector assurance, IT audit, cloud security, or related roles, with meaningful exposure to EMEA markets.",
+    "rule": "years_of_experience",
+    "expected": "unknown",
+    "why": "'Ideally, You'd Have 7+ years' - preference framing."
+  },
+  {
+    "text": "Ideally you'd have: 2-3 years of experience as a DevOps Engineer, DevSecOps Engineer, Software Engineer with a strong focus on CI/CD, or a similar role.",
+    "rule": "years_of_experience",
+    "expected": "unknown",
+    "why": "'Ideally you'd have' preference framing; also a 2-3 year range."
+  },
+  {
+    "text": "Unfortunately, we are not able to sponsor visas,&nbsp; including CPT/OPT&nbsp; or employ corp-to-corp.",
+    "rule": "work_authorization",
+    "expected": "fail",
+    "why": "'we are not able to sponsor visas' and this candidate needs sponsorship.",
+    "work_authorization": "needs_sponsorship"
+  },
+  {
+    "text": "Unfortunately, we are not able to sponsor visas,&nbsp; including CPT/OPT&nbsp; or employ corp-to-corp.",
+    "rule": "work_authorization",
+    "expected": "unknown",
+    "why": "Same sentence, candidate is a US citizen: an employer's refusal to sponsor is irrelevant to them."
+  },
+  {
+    "text": "To be eligible, candidates must be authorized to work in the United States; visa sponsorship is not available for this role.",
+    "rule": "work_authorization",
+    "expected": "fail",
+    "why": "'visa sponsorship is not available for this role'.",
+    "work_authorization": "needs_sponsorship"
+  },
+  {
+    "text": "To be eligible, candidates must be authorized to work in Canada; visa sponsorship is not available for this role.",
+    "rule": "work_authorization",
+    "expected": "fail",
+    "why": "'visa sponsorship is not available for this role' (Canada posting).",
+    "work_authorization": "needs_sponsorship"
+  },
+  {
+    "text": "You know that the path from prototype to production inside the IC requires executive sponsorship at the SES/Flag level, and you know how to earn it.",
+    "rule": "work_authorization",
+    "expected": "unknown",
+    "why": "'executive sponsorship' is deal-making language, not visa sponsorship.",
+    "work_authorization": "needs_sponsorship"
+  },
+  {
+    "text": "Federal Government team in their event and field marketing initiatives including but not limited to third-party trade show sponsorships, Scale hosted executive events, Scale hosted practitioner events and meetups, and ou",
+    "rule": "work_authorization",
+    "expected": "unknown",
+    "why": "'including but not limited to third-party trade show sponsorships' - 'not' belongs to 'limited to', not to sponsoring.",
+    "work_authorization": "needs_sponsorship"
+  },
+  {
+    "text": "You will maintain active, trusted relationships with SES-level sponsors, PEOs, mission area leads, and technical evaluators.",
+    "rule": "work_authorization",
+    "expected": "unknown",
+    "why": "'SES-level sponsors' are government stakeholders, not visa sponsorship.",
+    "work_authorization": "needs_sponsorship"
+  },
+  {
+    "text": "An active TS/SCI clearance is required.",
+    "rule": "work_authorization",
+    "expected": "fail",
+    "why": "'An active TS/SCI clearance is required.'"
+  },
+  {
+    "text": "Must have: At least an active TS/SCI clearance and the ability &amp; willingness to up level to CI Poly.",
+    "rule": "work_authorization",
+    "expected": "fail",
+    "why": "'Must have: At least an active TS/SCI clearance'."
+  },
+  {
+    "text": "This role will require at minimum an active Secret clearance and willingness to obtain a TS/SCI security clearance.",
+    "rule": "work_authorization",
+    "expected": "fail",
+    "why": "'This role will require at minimum an active Secret clearance' - requirement stated before the clearance term."
+  },
+  {
+    "text": "Clearance: Active TS/SCI; Full Scope Polygraph strongly preferred Education: BS/BA required; technical degree, Master's, or MBA preferred.",
+    "rule": "work_authorization",
+    "expected": "unknown",
+    "why": "'Clearance: Active TS/SCI;' is a bare label; the only 'required' in the sentence belongs to Education, and the polygraph is 'preferred'. Conservative: not a stated blocker."
+  }
+]
