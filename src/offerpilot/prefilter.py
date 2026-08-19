@@ -29,9 +29,13 @@ _YEARS_SECTION_LABEL = re.compile(r"\b(?:requirements?|qualifications?)\b", re.I
 # recency, vesting, company history. Only a phrase the posting itself ties to
 # the candidate's own experience may hard-reject; the rest stay `unknown`.
 _EXPERIENCE_TOKEN = re.compile(r"\bexperience\b|\bexp\b", re.I)
+# Kept to things a posting counts years *of*. "citizenship" and "residency" are
+# deliberately absent: they co-occur with real experience bars in public-sector
+# postings ("5+ years of experience and US citizenship required") and would
+# suppress them.
 _YEARS_NON_EXPERIENCE = re.compile(
     r"\b(?:tenure|vesting|vested|401\s*\(?k\)?|seniority|ago|age|old|"
-    r"licen[cs]e|driving\s+record|residency|citizenship)\b", re.I)
+    r"licen[cs]e|driving\s+record)\b", re.I)
 # "Qualifications Required 8+ years in cybersecurity" is the one corpus shape
 # that states an experience bar with no "experience" noun anywhere near it: an
 # open-ended minimum bound to a field, directly under a requirement header.
