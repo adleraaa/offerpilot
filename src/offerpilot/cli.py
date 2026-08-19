@@ -20,6 +20,7 @@ def _collect_company(company, cfg):
 
 
 def cmd_collect(conn, cfg, profile, limit=None) -> dict:
+    db.upsert_companies(conn, cfg.get("companies", []))
     inserted = errors = seen = 0
     for company in cfg.get("companies", []):
         if limit is not None and seen >= limit:

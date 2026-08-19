@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+from offerpilot.labels import LABEL_SOURCES
 from offerpilot.models import NormalizedJob, FilterResult
 
 SCHEMA = """
@@ -83,6 +84,23 @@ def connect(path: str) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.commit()
+    migrate(conn)
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Additive, idempotent column adds for DBs created before Week 2."""
+    review_cols = _columns(conn, "review_items")
+    if "edited_brief_json" not in review_cols:
+        conn.execute("ALTER TABLE review_items ADD COLUMN edited_brief_json TEXT")
+    if "edited_at" not in review_cols:
+        conn.execute("ALTER TABLE review_items ADD COLUMN edited_at TEXT")
+    if "notes" not in _columns(conn, "labels"):
+        conn.execute("ALTER TABLE labels ADD COLUMN notes TEXT")
+    conn.commit()
 
 
 def _content_hash(job: NormalizedJob) -> str:
@@ -157,3 +175,95 @@ def record_filter_results(conn, version_id: int,
         [(version_id, r.outcome, r.rule, r.extracted_value, r.reason)
          for r in results])
     conn.commit()
+
+
+def upsert_companies(conn: sqlite3.Connection, companies: list[dict]) -> int:
+    conn.executemany(
+        "INSERT INTO companies(id, name) VALUES(?,?) "
+        "ON CONFLICT(id) DO UPDATE SET name=excluded.name",
+        [(c["id"], c.get("name", c["id"])) for c in companies])
+    conn.commit()
+    return len(companies)
+
+
+def record_label(conn: sqlite3.Connection, version_id: int, *,
+                 label_source: str,
+                 fit_label: str | None = None, action_label: str | None = None,
+                 rejection_reason: str | None = None,
+                 notes: str | None = None) -> int:
+    if label_source not in LABEL_SOURCES:
+        raise ValueError(f"unknown label_source {label_source!r}")
+    cur = conn.execute(
+        "INSERT INTO labels(job_version_id, label_source, fit_label, "
+        "action_label, rejection_reason, notes) VALUES(?,?,?,?,?,?) RETURNING id",
+        (version_id, label_source, fit_label, action_label, rejection_reason,
+         notes))
+    label_id = cur.fetchone()["id"]
+    conn.commit()
+    return label_id
+
+
+def get_labels(conn: sqlite3.Connection, *, version_id: int | None = None,
+               label_source: str | None = None) -> list[sqlite3.Row]:
+    sql = "SELECT * FROM labels WHERE 1=1"
+    params: list = []
+    if version_id is not None:
+        sql += " AND job_version_id=?"
+        params.append(version_id)
+    if label_source is not None:
+        sql += " AND label_source=?"
+        params.append(label_source)
+    return conn.execute(sql + " ORDER BY id", params).fetchall()
+
+
+_REVIEW_SELECT = """
+SELECT ri.id AS review_item_id, ri.job_version_id, ri.match_json,
+       ri.total_score, ri.brief_json, ri.edited_brief_json, ri.edited_at,
+       ri.created_at,
+       jv.title, jv.location, jv.url, jv.description_text, jv.status,
+       j.company_id, j.source, j.canonical_url
+FROM review_items ri
+JOIN job_versions jv ON jv.id = ri.job_version_id
+JOIN jobs j ON j.id = jv.job_id
+"""
+
+
+def get_review_queue(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        _REVIEW_SELECT + " WHERE jv.status='pending_review' "
+        "ORDER BY ri.total_score DESC, ri.job_version_id").fetchall()
+
+
+def get_review_item(conn: sqlite3.Connection,
+                    version_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        _REVIEW_SELECT + " WHERE ri.job_version_id=?", (version_id,)).fetchone()
+
+
+def save_brief(conn: sqlite3.Connection, version_id: int,
+               brief_json: str) -> None:
+    conn.execute("UPDATE review_items SET brief_json=? WHERE job_version_id=?",
+                 (brief_json, version_id))
+    conn.commit()
+
+
+def save_edited_brief(conn: sqlite3.Connection, version_id: int,
+                      brief_json: str) -> None:
+    conn.execute(
+        "UPDATE review_items SET edited_brief_json=?, "
+        "edited_at=datetime('now') WHERE job_version_id=?",
+        (brief_json, version_id))
+    conn.commit()
+
+
+def get_blind_candidates(conn: sqlite3.Connection, limit: int = 50, *,
+                         unlabeled_only: bool = True) -> list[sqlite3.Row]:
+    sql = """
+    SELECT jv.id, jv.title, jv.location, jv.description_text, jv.status,
+           j.company_id, j.canonical_url
+    FROM job_versions jv JOIN jobs j ON j.id = jv.job_id
+    """
+    if unlabeled_only:
+        sql += ("WHERE NOT EXISTS (SELECT 1 FROM labels l "
+                "WHERE l.job_version_id = jv.id AND l.label_source='blind_eval') ")
+    return conn.execute(sql + "ORDER BY jv.id LIMIT ?", (limit,)).fetchall()
