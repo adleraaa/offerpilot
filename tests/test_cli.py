@@ -167,20 +167,36 @@ def test_config_strict_mode_refuses_to_fall_back(tmp_path, monkeypatch):
         load_config("config.yaml", strict=True)
 
 
-def test_retry_uses_the_state_machine(conn, profile):
-    """permanent_error -> ready_for_match must be a legal, recorded transition."""
+def test_retry_uses_the_state_machine(conn, profile, monkeypatch):
+    """permanent_error -> ready_for_match must be a legal, recorded transition.
+
+    Spying on ``db.set_status`` is the point of this test: a raw
+    ``UPDATE job_versions SET status='ready_for_match' WHERE
+    status='permanent_error'`` leaves an identical row behind, so only the
+    call itself distinguishes the state machine from a bypass.
+    """
     from offerpilot.cli import cmd_retry
+    from offerpilot.store import db as dbmod
     from offerpilot.store.db import ALLOWED_TRANSITIONS
     assert "ready_for_match" in ALLOWED_TRANSITIONS["permanent_error"]
     from conftest import _ready_row
     row = _ready_row(conn)
-    from offerpilot.store import db
-    db.set_status(conn, row["id"], "matching")
-    db.set_status(conn, row["id"], "permanent_error")
+    dbmod.set_status(conn, row["id"], "matching")
+    dbmod.set_status(conn, row["id"], "permanent_error")
+    conn.execute("UPDATE job_versions SET attempt_count=3 WHERE id=?",
+                 (row["id"],))
+    conn.commit()
+
+    seen = []
+    real = dbmod.set_status
+    monkeypatch.setattr(dbmod, "set_status",
+                        lambda c, v, st: (seen.append(st), real(c, v, st))[1])
+
     assert cmd_retry(conn, profile)["reset"] == 1
-    assert conn.execute("SELECT status, attempt_count FROM job_versions "
-                        "WHERE id=?", (row["id"],)).fetchone()["status"] == \
-        "ready_for_match"
+    assert seen == ["ready_for_match"]      # went through the state machine
+    r = conn.execute("SELECT status, attempt_count FROM job_versions "
+                     "WHERE id=?", (row["id"],)).fetchone()
+    assert r["status"] == "ready_for_match" and r["attempt_count"] == 0
 
 
 def test_run_records_git_commit_and_config_hash(conn, profile, scoring_llm):

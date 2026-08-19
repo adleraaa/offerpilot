@@ -184,3 +184,41 @@ def test_pre_call_estimate_blocks_a_call_that_would_breach_the_cap(conn, cfg):
         llm.structured(node="match", run_id=None, system="s" * 40000,
                        user="u" * 40000, schema=MatchResult)
     assert calls == []
+
+
+def test_usage_none_with_a_valid_choice_is_a_permanent_error(conn, cfg):
+    """Reaches _record: choices are fine, usage is not.
+
+    This is the case that pins _record's placement *inside* the try. With
+    non-empty choices the IndexError never fires, so the only thing that can
+    raise is usage.prompt_tokens inside _record -- and it must be mapped to
+    PermanentLLMError, not leak an AttributeError into the batch loop.
+    """
+    class R:
+        choices = [type("C", (), {"message": type("M", (), {
+            "content": '{"answer": 1}'})()})()]
+        usage = None
+
+    class Sdk:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": self})()
+
+        def create(self, **kw):
+            return R()
+
+    llm = LLMClient(conn, cfg, "k", client=Sdk())
+    with pytest.raises(PermanentLLMError):
+        llm.structured(node="match", run_id=None, system="s", user="u",
+                       schema=Out)
+
+
+def test_estimate_scales_with_prompt_length(conn, cfg):
+    """The input-token half of the estimate must actually count the prompt.
+
+    The cap test above trips on the fixed 1k-reply assumption alone, so this
+    is the only thing pinning the prompt-size term.
+    """
+    llm = LLMClient(conn, cfg, "k", client=FakeSDK(['{"answer": 7}']))
+    small = llm._estimate_cost("s", "u")
+    big = llm._estimate_cost("s" * 40000, "u" * 40000)
+    assert big > small * 5
