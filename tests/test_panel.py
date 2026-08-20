@@ -1,4 +1,3 @@
-import inspect
 import json
 import pathlib
 import re
@@ -248,11 +247,51 @@ def test_blind_page_route_exists_without_crashing(client):
     assert client.get("/blind").status_code in (200, 404)
 
 
-def test_serve_binds_loopback_by_default():
+@pytest.fixture
+def recorded_uvicorn(monkeypatch):
+    """Capture what `serve` actually hands uvicorn, without binding a socket.
+
+    Asserting on `serve`'s signature default only pins a value nothing has to
+    use; hardcoding `0.0.0.0` inside the body passed that version of this test.
+    """
+    import uvicorn
+    calls = []
+    monkeypatch.setattr(uvicorn, "run",
+                        lambda app, **kw: calls.append((app, kw)))
+    return calls
+
+
+def test_serve_binds_loopback_by_default(tmp_path, profile, recorded_uvicorn):
     """Single-user local tool: no auth, so it must never bind an interface."""
     from offerpilot.panel import app as panel_app
-    params = inspect.signature(panel_app.serve).parameters
-    assert params["host"].default == "127.0.0.1"
+    panel_app.serve(str(tmp_path / "s.db"), profile)
+    assert len(recorded_uvicorn) == 1
+    assert recorded_uvicorn[0][1]["host"] == "127.0.0.1"
+
+
+def test_serve_passes_an_explicit_loopback_host_through(tmp_path, profile,
+                                                        recorded_uvicorn):
+    """Loopback has more than one spelling; none of them is an interface."""
+    from offerpilot.panel import app as panel_app
+    for host in ("127.0.0.1", "localhost", "::1", "127.0.0.53"):
+        recorded_uvicorn.clear()
+        panel_app.serve(str(tmp_path / "s.db"), profile, host=host, port=9123)
+        assert recorded_uvicorn[0][1] == {"host": host, "port": 9123}, host
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "", "::", "192.168.1.9",
+                                  "example.com"])
+def test_serve_refuses_a_non_loopback_host(tmp_path, profile, recorded_uvicorn,
+                                           host):
+    """The panel approves jobs with no auth: reaching it off-box is the bug.
+
+    `cli` reads `panel.host` from config and passes it straight down, so the
+    refusal has to live at the bind, not in the caller.
+    """
+    from offerpilot.panel import app as panel_app
+    with pytest.raises(ValueError, match="loopback"):
+        panel_app.serve(str(tmp_path / "s.db"), profile, host=host)
+    assert recorded_uvicorn == []
 
 
 def test_panel_cli_serves_the_configured_loopback_address(tmp_path, monkeypatch):
@@ -271,3 +310,22 @@ def test_panel_cli_serves_the_configured_loopback_address(tmp_path, monkeypatch)
     assert calls["host"] == "127.0.0.1"
     assert calls["port"] == 8000
     assert calls["db_path"] == str(tmp_path / "cli.db")
+
+
+def test_panel_cli_refuses_a_non_loopback_configured_host(tmp_path, monkeypatch):
+    """A config edit must not be able to publish the panel to the LAN."""
+    from offerpilot import cli
+    from offerpilot.panel import app as panel_app
+
+    cfg = tmp_path / "bad.yaml"
+    cfg.write_text("panel:\n  host: 0.0.0.0\n  port: 8000\n", encoding="utf-8")
+
+    def boom(*a, **kw):
+        raise AssertionError("serve must not be reached with a LAN host")
+
+    monkeypatch.setattr(panel_app, "serve", boom)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["panel", "--db", str(tmp_path / "cli.db"),
+                  "--config", str(cfg),
+                  "--profile", "profile.example.yaml"])
+    assert e.value.code == 1

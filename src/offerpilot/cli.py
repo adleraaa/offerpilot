@@ -197,10 +197,16 @@ def main(argv=None):
         # FastAPI's import time.
         from offerpilot.panel import app as panel_app
         panel_cfg = cfg.get("panel") or {}
-        host = panel_cfg.get("host", "127.0.0.1")
         port = int(panel_cfg.get("port", 8000))
-        print(f"review panel on http://{host}:{port}  (ctrl-c to stop)")
         # The panel opens its own short-lived connection per request; holding
         # this one open would just be a second writer on the same WAL file.
         conn.close()
+        try:
+            # Before the banner: announcing an address the panel then refuses
+            # to bind would read as a crash rather than as the refusal it is.
+            host = panel_app.require_loopback(panel_cfg.get("host", "127.0.0.1"))
+        except ValueError as e:
+            print(e)
+            raise SystemExit(1)
+        print(f"review panel on http://{host}:{port}  (ctrl-c to stop)")
         panel_app.serve(args.db, profile, host=host, port=port)

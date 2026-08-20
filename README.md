@@ -202,8 +202,12 @@ the model's original, so the two stay comparable.
 
 There is no auth, no CORS and no session, and `serve` binds the loopback
 interface. That is the design for a single-user local tool that can approve a
-job: not reachable off the machine, so there is nothing to authenticate. Do not
-put it behind a tunnel or change `panel.host` without adding auth first.
+job: not reachable off the machine, so there is nothing to authenticate. The
+bind is enforced, not assumed — `serve` refuses to start on any host that is
+not loopback, including a `panel.host` of `0.0.0.0` in `config.yaml`, and the
+tests assert on the address actually handed to uvicorn rather than on the
+parameter's default. If you need the panel from another machine, tunnel to
+`127.0.0.1`; do not widen the bind without adding auth first.
 
 Job text stays untrusted all the way to the screen. The API returns it
 verbatim as JSON, and `panel/static/panel.js` builds every node with

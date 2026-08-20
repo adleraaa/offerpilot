@@ -3,7 +3,9 @@
 Single user, one machine. `serve` binds `127.0.0.1` and there is no auth, no
 CORS and no session -- that is the boundary, not an omission: the panel can
 approve a job and write a label, so it must not be reachable from anywhere
-but the loopback interface.
+but the loopback interface. `require_loopback` enforces that at the bind,
+because `cli` reads `panel.host` out of a config file and hands it straight
+down.
 
 Everything a route returns is JSON, verbatim. Job text is untrusted, and the
 escaping happens exactly once, in the browser, where `panel.js` writes it with
@@ -12,6 +14,7 @@ escaping happens exactly once, in the browser, where `panel.js` writes it with
 halves of that contract.
 """
 
+import ipaddress
 import json
 import pathlib
 import sqlite3
@@ -150,7 +153,32 @@ def create_app(db_path: str, profile) -> FastAPI:
     return app
 
 
+def require_loopback(host: str) -> str:
+    """Return `host` unchanged, or refuse if it is reachable off this machine.
+
+    Every route above can be called without authenticating, so the bind
+    address is the entire access-control story. That makes a one-line edit to
+    `panel.host` in `config.yaml` the cheapest way to publish an
+    unauthenticated write API to the LAN, and the caller is the wrong place to
+    catch it -- `cli` passes the configured value through verbatim.
+    """
+    try:
+        # Strip the brackets a URL-shaped IPv6 literal arrives wrapped in.
+        ok = ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        # Not an address at all; a name could resolve anywhere, so only the
+        # one that cannot resolve off-box is allowed.
+        ok = host == "localhost"
+    if not ok:
+        raise ValueError(
+            f"panel host {host!r} is not a loopback address. The review panel "
+            f"approves jobs and writes labels with no auth, so it must not be "
+            f"reachable off this machine: bind 127.0.0.1 and tunnel to it.")
+    return host
+
+
 def serve(db_path: str, profile, host: str = "127.0.0.1",
           port: int = 8000) -> None:
     import uvicorn
+    require_loopback(host)
     uvicorn.run(create_app(db_path, profile), host=host, port=port)
