@@ -14,6 +14,7 @@ only shows up on someone else's machine.
 
 import pathlib
 import re
+import subprocess
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 README = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -27,9 +28,27 @@ _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _PATH_SUFFIXES = (".py", ".yaml", ".yml", ".toml", ".md", ".json", ".png")
 
 
+SPEC = "docs/superpowers/specs/2026-07-24-offerpilot-design.md"
+
+# Subsystems the frozen spec's build-status banner lists as "Not built", each
+# with the module that proves otherwise. The spec is frozen, so the README --
+# not the banner -- is the lever when one of these ships.
+_BANNER_CLAIMS = {
+    "LangGraph orchestration": "src/offerpilot/graph.py",
+    "the application brief node": "src/offerpilot/brief.py",
+    "the review panel": "src/offerpilot/panel/app.py",
+    "the blind-labeled evaluation set": "src/offerpilot/evaluate.py",
+}
+_STALENESS_WORDS = ("stale", "predates", "out of date", "outdated",
+                    "before Week 2", "pre-Week-2")
+
+
 def _section(heading: str) -> str:
     start = README.index(heading)
-    rest = README.index("\n## ", start + len(heading))
+    try:
+        rest = README.index("\n## ", start + len(heading))
+    except ValueError:  # last section in the file
+        rest = len(README)
     return README[start:rest]
 
 
@@ -98,17 +117,101 @@ def test_readme_calls_the_eval_a_small_blind_labeled_set_never_a_benchmark():
     assert "benchmark" not in README.lower()
 
 
+def _committed_paths():
+    """Every path git tracks, plus the directories they imply.
+
+    Deliberately not `Path.exists()`. `config.yaml`, `profile.yaml` and
+    `data/` are gitignored by design and are present in a working tree that
+    has ever been used, so an existence check passes here and fails on the
+    clean clone CI makes -- the one place where nobody sees it until the
+    badge goes red. Asking git instead makes that failure local.
+
+    Falls back to the filesystem when git is unavailable (a source tarball,
+    say), which is the weaker check but never wrongly red.
+    """
+    try:
+        out = subprocess.run(["git", "ls-files", "-z"], cwd=REPO_ROOT,
+                             capture_output=True, text=True,
+                             check=True).stdout
+    except (OSError, subprocess.CalledProcessError):  # pragma: no cover
+        return None
+    tracked = {p for p in out.split("\0") if p}
+    for f in list(tracked):
+        parts = f.split("/")
+        for i in range(1, len(parts)):
+            tracked.add("/".join(parts[:i]))
+    return tracked
+
+
+def _layout_paths(section: str | None = None):
+    """The path column of the layout table, and only the path column.
+
+    The description column legitimately names gitignored files -- the
+    `profile.py` row explains that it loads `profile.yaml` -- so scraping
+    every backticked token out of the section turns prose into a path
+    assertion and fails on a clean clone.
+    """
+    if section is None:
+        section = _section("## Project layout")
+    first_cells = re.findall(r"^\|\s*`([^`]+)`", section, re.M)
+    return [t for t in first_cells if "/" in t or t.endswith(_PATH_SUFFIXES)]
+
+
+def test_layout_scrape_reads_the_path_column_only():
+    """Regression: a whole-row scrape reads prose as if it were a path.
+
+    Synthetic on purpose -- reading the real row would re-couple this to the
+    README's wording, and the property under test is about the scrape.
+    """
+    table = ("## Project layout\n\n"
+             "| Path | What lives there |\n"
+             "|---|---|\n"
+             "| `src/offerpilot/profile.py` | `profile.yaml` loading |\n")
+    assert _layout_paths(table) == ["src/offerpilot/profile.py"]
+
+
 def test_project_layout_lists_only_paths_that_exist():
     """Only committed paths belong in the layout table.
 
     `config.yaml`, `profile.yaml` and `data/` are gitignored by design, so
-    naming them here would fail this test on a clean clone -- describe them in
-    the Real mode section instead.
+    naming them in the path column would fail this test on a clean clone --
+    describe them in the Real mode section instead.
     """
     assert "## Project layout" in README
-    section = _section("## Project layout")
-    paths = [t for t in _BACKTICK_RE.findall(section)
-             if "/" in t or t.endswith(_PATH_SUFFIXES)]
+    paths = _layout_paths()
     assert paths, "the project layout section lists no paths"
-    missing = [p for p in paths if not (REPO_ROOT / p.rstrip("/")).exists()]
+    committed = _committed_paths()
+    if committed is None:  # pragma: no cover - git-less checkout
+        missing = [p for p in paths if not (REPO_ROOT / p.rstrip("/")).exists()]
+    else:
+        missing = [p for p in paths if p.rstrip("/") not in committed]
     assert missing == [], f"project layout names missing paths: {missing}"
+
+
+def _spec_not_built() -> str:
+    """The `Not built:` sentence out of the frozen spec's status banner."""
+    text = (REPO_ROOT / SPEC).read_text(encoding="utf-8")
+    banner = re.sub(r"^> ?", "", text[:text.index("\n## ")], flags=re.M)
+    return " ".join(banner.split("Not built:", 1)[1].split())
+
+
+def test_readme_does_not_vouch_for_a_stale_spec_banner():
+    """The README may point at the spec banner, but not certify it as current.
+
+    The spec is frozen, and its banner was written before Week 2 shipped the
+    graph, the brief node, the panel and the eval harness -- so it now lists
+    built subsystems as absent. A reader who follows the README's pointer
+    lands on a document that understates the build, which is the same defect
+    as claiming something absent in the README itself, one indirection out.
+    The lever available here is the README sentence, not the frozen file.
+    """
+    not_built = _spec_not_built()
+    stale = sorted(claim for claim, path in _BANNER_CLAIMS.items()
+                   if claim in not_built and (REPO_ROOT / path).exists())
+    docs = _section("## Docs").lower()
+    if not stale:
+        # Banner refreshed: nothing left to warn about, so do not demand it.
+        return
+    assert any(w.lower() in docs for w in _STALENESS_WORDS), (
+        f"the spec banner still lists {stale} as not built, but the README's "
+        "Docs section does not say the banner is out of date")

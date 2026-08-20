@@ -506,7 +506,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-278 tests, all passing, and CI runs them on every push. They need no network and
+280 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, the panel
 is driven in-process with FastAPI's `TestClient`, and the graph is exercised
@@ -514,7 +514,18 @@ with stub clients that return schema-valid objects.
 
 ## Docs
 
-`docs/superpowers/specs/2026-07-24-offerpilot-design.md` is the design spec and
-describes a larger system than the one above. It carries a status banner saying
-what is actually built. `docs/superpowers/plans/` holds the implementation
-plans, including the remaining Week 2 work.
+`docs/superpowers/specs/2026-07-24-offerpilot-design.md` is the design spec. It
+was frozen before implementation and describes a larger system than the one
+above, so read it as a record of intent, not as a description of the code.
+
+It carries a build-status banner, and **that banner is itself out of date**: it
+predates the Week 2 work and still lists the LangGraph orchestration, the brief
+node, the review panel and the blind-labeled evaluation harness as not built.
+All four exist and are described above. The spec is frozen — scope changes take
+a new revision, not an edit — so this README, not the banner, is the current
+account of what runs. What the banner still gets right is the rest of **What is
+not built** above: no retrieval, no eval numbers, and no run of either LLM node
+against a real API key.
+
+`docs/superpowers/plans/` holds the implementation plans, including the
+remaining Week 2 work.
