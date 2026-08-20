@@ -1,12 +1,7 @@
 llm:
   base_url: https://api.deepseek.com
-  # deepseek-chat is a legacy alias: a 2026-08-20 probe requested it and the
-  # response came back as deepseek-v4-flash. Pin the real name so the price
-  # key, the requested model and the served model all agree.
   model: deepseek-v4-flash
-  daily_spend_cap_usd: 2.00
-  # https://api-docs.deepseek.com/quick_start/pricing/ (checked 2026-08-20).
-  # Off-peak rates; peak (01:00-04:00 and 06:00-10:00 UTC) is 2x.
+  daily_spend_cap_usd: 2.0
   prices:
     deepseek-v4-flash:
       input_cache_hit_per_mtok_usd: 0.007
@@ -28,13 +23,32 @@ panel:
   port: 8000
 eval:
   results_dir: evals/results
-  precision_at: [5, 10]
+  precision_at:
+  - 5
+  - 10
+# Real, public ATS boards, verified reachable on 2026-08-20. They are a
+# starting point so `collect` works on a fresh clone, not a recommendation --
+# the eval showed the corpus matters more than the model, and these boards are
+# only as useful as their overlap with what you are actually looking for.
+# One Lever board is included so both collectors are exercised.
 companies:
-  - id: examplecorp
-    name: ExampleCorp
-    ats: greenhouse
-    ats_slug: examplecorp
-  - id: samplestartup
-    name: SampleStartup
-    ats: lever
-    ats_slug: samplestartup
+- id: figma
+  name: Figma
+  ats: greenhouse
+  ats_slug: figma
+- id: datadog
+  name: Datadog
+  ats: greenhouse
+  ats_slug: datadog
+- id: databricks
+  name: Databricks
+  ats: greenhouse
+  ats_slug: databricks
+- id: samsara
+  name: Samsara
+  ats: greenhouse
+  ats_slug: samsara
+- id: ro
+  name: Ro
+  ats: lever
+  ats_slug: ro

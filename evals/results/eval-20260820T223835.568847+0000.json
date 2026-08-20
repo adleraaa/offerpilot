@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-08-20T22:38:35.568847+00:00",
+  "git_commit": "5a1ce7f1534c0ef7647d20f0b3ad6ad4d0e9e0e2",
+  "profile": {
+    "path": "profile.yaml",
+    "sha256_16": "8abb479511f9d04f",
+    "experience_count": 5
+  },
+  "database": "offerpilot.db",
+  "labels": {
+    "blind_labeled": 40,
+    "uncertain_excluded": 0,
+    "undecided_excluded": 0,
+    "scored": 40
+  },
+  "classification": {
+    "tp": 2,
+    "fp": 0,
+    "fn": 7,
+    "tn": 31,
+    "precision": 1.0,
+    "recall": 0.2222222222222222,
+    "f1": 0.3636363636363636,
+    "n": 40
+  },
+  "ranking": {
+    "precision_at_5": 1.0,
+    "precision_at_10": 1.0,
+    "ranked_jobs": 2
+  },
+  "prefilter_false_negatives": 4,
+  "groundedness": {
+    "briefs_checked": 2,
+    "briefs_with_flags": 0,
+    "unknown_source_ids": 0,
+    "unsupported_numbers": 0,
+    "unsupported_proper_nouns": 0
+  },
+  "note": "Formal metrics use blind_eval labels only; review_feedback labels are auxiliary signal (spec section 4)."
+}

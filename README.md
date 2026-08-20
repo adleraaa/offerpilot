@@ -523,25 +523,66 @@ confusion matrix over the good_fit / poor_fit labels (`uncertain` is excluded
 and counted separately), Precision@5 and @10 over the score ranking, the
 prefilter false-negative count, and groundedness flag counts over the briefs.
 It also records the git commit, the database path, and the profile it scored
-against — path, hash, and the experience ids groundedness is defined over — so
-a committed artifact can be checked against its inputs later.
+against — its path and a hash. The experience ids themselves are deliberately
+left out: `evals/results/` is committed to a public repo, the ids are the
+candidate's own project names, and the hash already tells two runs apart.
 
 Each run writes `evals/results/eval-<timestamp>.json`, which is committed.
 `evals/dataset/README.md` explains why the dataset is produced in place rather
-than shipped as a file of copied postings. **There are no numbers to report
-yet:** no blind labels have been collected, so `evals/results/` is empty.
+than shipped as a file of copied postings.
+
+### Results, 2026-08-20 (n = 40)
+
+Forty jobs labelled by the candidate in the blind view, from a corpus of 1,899
+postings across six Greenhouse boards. Nine were labelled `good_fit`, 31
+`poor_fit`, none `uncertain`.
+
+| | |
+|---|---|
+| Precision | **1.00** (2 TP, 0 FP) |
+| Recall | **0.22** (7 FN) |
+| F1 | 0.36 |
+| Precision@5 / @10 | 1.00 / 1.00, over **2 ranked jobs** |
+| Prefilter false negatives | **4** |
+| Groundedness flags | 0, over 2 briefs |
+
+**The pipeline is far too conservative, and that is the finding.** It never
+surfaced a job the candidate did not want — precision is perfect — but it lost
+seven of the nine they did want. Four were dropped by the prefilter's
+`graduation_window` rule, which is working exactly as specified: the postings
+name a 2027 or 2028 graduation window and the candidate finishes in 2029. The
+other three were failed by the match node on eligibility. So the conservative
+principle, written to stop the rules from silently losing good jobs, is not
+achieving that: the loss has just moved from unparseable text to correctly
+parsed text applied as a hard gate.
+
+The obvious next change is to stop treating a stated graduation year as a hard
+filter and let it reach the model as a signal instead. That is a spec change,
+not a bug fix, so it is not made here.
+
+Read the ranking numbers with the `ranked_jobs` count next to them. Only two of
+the forty labelled jobs ever received a score, so Precision@10 is computed over
+a pool of two. An earlier version of this harness padded the unscored jobs with
+a sentinel score, which made them tie and let the sort's stability order them by
+*label insertion order* — reporting a confident 0.9 that would have changed if
+the same person had labelled in a different sequence. Unscored jobs are now
+excluded from the ranking, because a job the pipeline never scored has no rank.
+
+One more thing this run showed, before any of the above: the corpus matters more
+than the model. Pointed at two boards of mostly senior and go-to-market roles,
+213 postings yielded roughly two a second-year student could plausibly take, and
+no eval run on that set could have said anything. The boards in `config.example.yaml`
+are real and reachable so a fresh clone collects something, but they are a
+starting point, not a recommendation.
 
 ## What is not built
 
 - No retrieval. No embeddings, no vector store, no Chroma or
   sentence-transformers. Evidence is the structured profile and nothing else.
-- No eval numbers. The harness is built and reads the `blind_eval` labels, but
-  the labeled set has not been assembled, so there are no fit, ranking or
-  groundedness numbers to report and `evals/results/` is empty. The 40–60
-  target the blind page displays is a target, not a count that has been
-  reached. The groundedness checks are heuristics — unknown evidence ids,
-  numbers and capitalised tokens that appear in neither the profile nor the
-  posting — so they flag lines worth reading, not lines that are false.
+- No eval beyond one 40-label run. The harness works and the numbers
+  above are real, but 40 labels from one person on one afternoon is a
+  sanity check, not a measurement. `uncertain` was never used, and only
+  two jobs were ever ranked.
 - No recorded *real* model outputs. `demo` exists and needs no key, but the
   outputs it replays from `demo/recorded_outputs.json` were written by hand to
   exercise each terminal state, not captured from a live model.
@@ -602,7 +643,7 @@ python -m ruff check .
 python -m pytest -q
 ```
 
-310 tests, all passing, and CI runs them on every push. `ruff check .` runs as
+314 tests, all passing, and CI runs them on every push. `ruff check .` runs as
 its own CI step, on pyflakes rules only — unused imports, unused locals,
 undefined names. `[tool.ruff.lint]` in `pyproject.toml` says why the stylistic
 and unused-argument rules are off. They need no network and

@@ -199,26 +199,32 @@ def profile_fingerprint(profile, path: str | None = None) -> dict:
     -- output that is indistinguishable from a genuine finding once the
     warning on stdout has scrolled away. The result file is committed as
     evidence, so it has to carry enough to tell those two runs apart after the
-    fact: the path asked for, a hash that changes when the profile does, and
-    the id vocabulary itself, which is the part the numbers depend on.
+    fact: the path asked for, and a hash that changes when the profile does.
+
+    The ids themselves are deliberately NOT recorded. `evals/results/` is
+    committed to a public repo, and the ids are the names of the candidate's
+    own projects -- content they did not ask to publish. The hash already
+    tells two runs apart, which is the job this field exists to do.
     """
     payload = json.dumps(profile.model_dump(mode="json"), sort_keys=True,
                          ensure_ascii=False)
     return {"path": path,
             "sha256_16": hashlib.sha256(payload.encode()).hexdigest()[:16],
-            "experience_ids": sorted(profile.experience_ids())}
+            "experience_count": len(profile.experience_ids())}
 
 
 def _db_path(conn) -> str:
     """The file this connection is actually reading, asked of SQLite itself.
 
     Taken from the connection rather than from a caller-supplied string so it
-    cannot disagree with the database the metrics came from.
+    cannot disagree with the database the metrics came from. Reduced to the
+    filename: the result file is committed, and the absolute path says more
+    about the author's disk than about the run.
     """
     try:
         for row in conn.execute("PRAGMA database_list"):
             if row["name"] == "main":
-                return row["file"] or ":memory:"
+                return os.path.basename(row["file"]) if row["file"] else ":memory:"
     except Exception:
         pass
     return "unknown"
@@ -261,8 +267,12 @@ def run_eval(conn, profile, *, results_dir: str = "evals/results",
             prefilter_false_negatives += 1
         pairs.append((pred, actual))
         item = db.get_review_item(conn, version_id)
-        # Never-scored jobs sort below every scored one rather than above.
-        ranked.append((item["total_score"] if item is not None else -1, actual))
+        # Only jobs the pipeline actually scored have a rank. A sentinel for
+        # the rest makes them tie, and a stable sort then breaks that tie by
+        # insertion order -- which is label order, not model order. That is
+        # how a real run reported precision_at_10 = 0.9 off two scored jobs.
+        if item is not None:
+            ranked.append((item["total_score"], actual))
         if item is not None:
             brief_json = item["edited_brief_json"] or item["brief_json"]
             if brief_json:
@@ -290,8 +300,11 @@ def run_eval(conn, profile, *, results_dir: str = "evals/results",
         "labels": {"blind_labeled": len(blind), "uncertain_excluded": uncertain,
                    "undecided_excluded": undecided, "scored": len(pairs)},
         "classification": classification_metrics(pairs),
-        "ranking": {f"precision_at_{k}": precision_at_k(ranked_actuals, k)
-                    for k in precision_at},
+        "ranking": {**{f"precision_at_{k}": precision_at_k(ranked_actuals, k)
+                       for k in precision_at},
+                    # Without this the P@K figures are uninterpretable: K=10
+                    # over a pool of 2 is not a ranking result.
+                    "ranked_jobs": len(ranked_actuals)},
         "prefilter_false_negatives": prefilter_false_negatives,
         "groundedness": groundedness,
         "note": ("Formal metrics use blind_eval labels only; review_feedback "

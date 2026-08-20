@@ -238,7 +238,7 @@ def test_cli_eval_command_writes_a_result_naming_its_inputs(tmp_path):
     saved = json.loads(files[0].read_text(encoding="utf-8"))
     # Explicitly asking for the example profile is allowed; the result says so.
     assert saved["profile"]["path"] == "profile.example.yaml"
-    assert os.path.samefile(saved["database"], db_path)
+    assert saved["database"] == os.path.basename(db_path)
 
 
 def test_run_eval_records_the_profile_it_scored_against(conn, tmp_path,
@@ -256,7 +256,8 @@ def test_run_eval_records_the_profile_it_scored_against(conn, tmp_path,
     saved = json.loads(next(results.glob("eval-*.json")).read_text("utf-8"))
     assert saved["profile"] == out["profile"]
     assert saved["profile"]["path"] == "profile.yaml"
-    assert saved["profile"]["experience_ids"] == ["pathpilot"]
+    assert saved["profile"]["experience_count"] == 1
+    assert "pathpilot" not in json.dumps(saved)
     assert len(saved["profile"]["sha256_16"]) == 16
 
 
@@ -264,13 +265,20 @@ def test_profile_fingerprint_tells_the_example_profile_apart(profile):
     from offerpilot.profile import load_profile
     example = profile_fingerprint(load_profile("profile.example.yaml"))
     assert example["sha256_16"] != profile_fingerprint(profile)["sha256_16"]
-    assert example["experience_ids"] == ["sample_automation", "sample_project"]
+    # The ids used to be recorded here. They are the candidate's own project
+    # names and `evals/results/` is committed to a public repo, so the hash --
+    # which is what actually tells two runs apart -- carries the provenance
+    # and the count carries the shape.
+    assert "experience_ids" not in example
+    assert example["experience_count"] == 2
 
 
 def test_run_eval_records_the_database_it_read(conn, tmp_path, profile):
     out = run_eval(conn, profile, results_dir=str(tmp_path / "r"),
                    precision_at=[5])
-    assert os.path.samefile(out["database"], tmp_path / "t.db")
+    # Filename only: the result file is committed, and an absolute path
+    # describes the author's disk rather than the run.
+    assert out["database"] == "t.db"
 
 
 def test_cli_eval_refuses_a_database_that_does_not_exist(tmp_path):
@@ -405,3 +413,76 @@ def test_the_real_brief_flags_only_genuinely_unsupported_names(profile):
     assert flagged & {"OfferPilot", "Next.js"}, "heuristic went blind"
     assert not (flagged & {"Created", "Developed", "Built", "This",
                            "LLM-powered", "Stevens"}), flagged
+
+
+def test_precision_at_k_ignores_jobs_the_pipeline_never_scored(tmp_path, profile):
+    """Unscored jobs have no rank; a sentinel score lets label order decide.
+
+    Found by running the eval for real: 38 of 40 labelled jobs had no
+    review_item, all tied at the -1 sentinel, and Python's stable sort left
+    them in label-insertion order. Every good_fit label had been written
+    first, so precision_at_10 came back 0.9 -- a number that would have
+    changed if the same person had labelled in a different order.
+    """
+    from tests.conftest import _make_job
+    conn = db.connect(str(tmp_path / "r.db"))
+    db.init_schema(conn)
+
+    # One scored job the human calls poor, then several unscored good ones.
+    _, scored = db.upsert_job(conn, _make_job("1"))
+    db.set_status(conn, scored, "ready_for_match")
+    db.set_status(conn, scored, "matching")
+    conn.execute("INSERT INTO review_items(job_version_id, match_json, "
+                 "total_score) VALUES(?,?,?)", (scored, '{"eligibility":"pass"}', 90))
+    conn.commit()
+    db.set_status(conn, scored, "pending_review")
+    db.record_label(conn, scored, label_source="blind_eval", fit_label="poor_fit")
+
+    for i in range(2, 6):
+        _, vid = db.upsert_job(conn, _make_job(str(i)))
+        db.set_status(conn, vid, "filtered_out")
+        db.record_label(conn, vid, label_source="blind_eval",
+                        fit_label="good_fit")
+
+    out = run_eval(conn, profile, results_dir=str(tmp_path / "res"),
+                   precision_at=[5])
+    # Only one job was ever ranked, and the human called it a poor fit.
+    assert out["ranking"]["precision_at_5"] == 0.0
+    assert out["ranking"]["ranked_jobs"] == 1
+
+
+def test_ranking_reports_how_many_jobs_were_ranked(tmp_path, profile):
+    """P@K is uninterpretable without the size of the pool it ranked."""
+    conn = db.connect(str(tmp_path / "r2.db"))
+    db.init_schema(conn)
+    out = run_eval(conn, profile, results_dir=str(tmp_path / "res"),
+                   precision_at=[5])
+    assert out["ranking"]["ranked_jobs"] == 0
+    assert out["ranking"]["precision_at_5"] is None
+
+
+def test_eval_result_does_not_publish_profile_contents(tmp_path, profile):
+    """`evals/results/` is committed to a public repo.
+
+    The sha256 already pins which profile produced the numbers, so the
+    experience ids add nothing a reader needs and everything the candidate
+    did not ask to publish -- they are the names of their private projects.
+    """
+    conn = db.connect(str(tmp_path / "p.db"))
+    db.init_schema(conn)
+    out = run_eval(conn, profile, results_dir=str(tmp_path / "res"),
+                   precision_at=[5])
+    flat = json.dumps(out)
+    assert "pathpilot" not in flat, "eval result leaks experience ids"
+    assert out["profile"]["sha256_16"], "provenance hash must survive"
+    assert out["profile"]["experience_count"] == 1
+
+
+def test_eval_result_records_only_the_database_filename(tmp_path, profile):
+    """An absolute path in a committed artifact leaks the author's layout."""
+    conn = db.connect(str(tmp_path / "whatever.db"))
+    db.init_schema(conn)
+    out = run_eval(conn, profile, results_dir=str(tmp_path / "res"),
+                   precision_at=[5])
+    assert out["database"] == "whatever.db"
+    assert ":" not in out["database"] and "/" not in out["database"]
