@@ -73,6 +73,61 @@ def test_retry_resets_permanent(conn, profile):
     assert cli.cmd_status(conn) == {"ready_for_match": 1}
 
 
+def test_retry_recovers_a_row_parked_at_retryable_error(conn, profile,
+                                                        monkeypatch):
+    """`retryable_error` was a state with a legal exit nothing ever took.
+
+    `run_match_for_version` writes `retryable_error` and then `ready_for_match`
+    as two separately committed transitions. Kill the batch in between -- Ctrl-C
+    on a long `offerpilot match`, an OOM, a dropped connection -- and the row
+    stops at `retryable_error` for good. `sweep_stale_matching` only looks at
+    `matching`, `sweep_stuck_new` only at `new`, and `cmd_retry` only reset
+    `permanent_error`, so the job was parked in a state `ALLOWED_TRANSITIONS`
+    lets it out of and no command ever asked it to leave: invisible to the
+    queue, unreachable by `match`, and not counted as an error anyone would
+    look at.
+
+    The interruption is simulated rather than hand-set so the state is reached
+    the way it is reached in production, not just written into the row.
+    """
+    from offerpilot import graph
+    from offerpilot.llm import RetryableLLMError
+    from tests.test_graph import StubLLM
+
+    job = NormalizedJob(source="lever", external_id="1", company_id="c",
+                        title="AI Intern", location="New York, NY",
+                        url="https://x.co/1", canonical_url="https://x.co/1",
+                        description_text="Build agents in New York, NY.")
+    _, v = db.upsert_job(conn, job)
+    db.set_status(conn, v, "ready_for_match")
+    row = conn.execute("SELECT * FROM job_versions WHERE id=?", (v,)).fetchone()
+
+    real_set_status = db.set_status
+
+    def die_mid_reset(c, version_id, status):
+        current = c.execute("SELECT status FROM job_versions WHERE id=?",
+                            (version_id,)).fetchone()["status"]
+        if current == "retryable_error" and status == "ready_for_match":
+            raise KeyboardInterrupt("batch killed between the two commits")
+        return real_set_status(c, version_id, status)
+
+    monkeypatch.setattr(db, "set_status", die_mid_reset)
+    with pytest.raises(KeyboardInterrupt):
+        graph.run_match_for_version(conn, StubLLM(exc=RetryableLLMError("429")),
+                                    profile, row, threshold=60,
+                                    max_auto_retries=3)
+    monkeypatch.setattr(db, "set_status", real_set_status)
+    assert cli.cmd_status(conn) == {"retryable_error": 1}, (
+        "the interrupted run should have left the row parked at "
+        "retryable_error; if it did not, this test no longer tests anything")
+
+    out = cli.cmd_retry(conn, profile)
+    assert out["reset"] == 1
+    assert cli.cmd_status(conn) == {"ready_for_match": 1}
+    assert conn.execute("SELECT attempt_count FROM job_versions WHERE id=?",
+                        (v,)).fetchone()["attempt_count"] == 0
+
+
 def test_collect_isolates_per_job_failures(conn, monkeypatch):
     def fake_collect_company(company, cfg):
         return [

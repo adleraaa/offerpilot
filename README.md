@@ -423,9 +423,13 @@ python -m offerpilot retry
 
 `retry` sweeps versions stuck in `matching` for over 15 minutes back to
 `ready_for_match`, re-prefilters versions orphaned at `new` by a crash between
-the insert and the prefilter, and resets `permanent_error` rows to
-`ready_for_match` with a zeroed attempt count. That orphan sweep also runs at
-the start of `collect`, so a crashed run self-heals.
+the insert and the prefilter, and resets both error states — `permanent_error`
+and `retryable_error` — to `ready_for_match` with a zeroed attempt count.
+`retryable_error` is normally a state the graph writes and leaves in the same
+call, but the two transitions are separate commits, so a batch killed in
+between parks a row there; before it was swept here, nothing could move it
+again. That orphan sweep also runs at the start of `collect`, so a crashed run
+self-heals.
 
 Every subcommand takes `--db` (default `data/offerpilot.db`), `--config`
 (default `config.yaml`), `--profile` (default `profile.yaml`) and `--limit`
@@ -594,7 +598,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-306 tests, all passing, and CI runs them on every push. They need no network and
+307 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, the panel
 is driven in-process with FastAPI's `TestClient`, and the graph is exercised

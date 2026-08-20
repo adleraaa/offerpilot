@@ -123,16 +123,28 @@ def cmd_status(conn) -> dict:
     return {r["status"]: r["c"] for r in rows}
 
 
+# Both error states, not just the terminal one. `retryable_error` looks
+# transient in `graph.py` -- every branch that writes it writes the next status
+# immediately after -- but those are two separately committed transitions, so a
+# batch killed in between (Ctrl-C, OOM, a dropped connection) leaves the row
+# parked there. Nothing else sweeps it: `sweep_stale_matching` looks at
+# `matching` and `sweep_stuck_new` at `new`. `ALLOWED_TRANSITIONS` has always
+# allowed `retryable_error -> ready_for_match`; until this list had two entries
+# nothing ever asked for it, and the job sat in the database unreachable.
+_RESET_TO_READY = ("permanent_error", "retryable_error")
+
+
 def cmd_retry(conn, profile) -> dict:
     stale = db.sweep_stale_matching(conn)
     orphans = db.sweep_stuck_new(conn, profile)
     reset = 0
-    for row in db.get_versions_by_status(conn, "permanent_error"):
-        db.set_status(conn, row["id"], "ready_for_match")
-        conn.execute("UPDATE job_versions SET attempt_count=0 WHERE id=?",
-                     (row["id"],))
-        conn.commit()
-        reset += 1
+    for status in _RESET_TO_READY:
+        for row in db.get_versions_by_status(conn, status):
+            db.set_status(conn, row["id"], "ready_for_match")
+            conn.execute("UPDATE job_versions SET attempt_count=0 WHERE id=?",
+                         (row["id"],))
+            conn.commit()
+            reset += 1
     return {"reset": reset, "stale_swept": stale,
             "orphans_prefiltered": orphans}
 
