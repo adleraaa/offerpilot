@@ -16,6 +16,8 @@ import pathlib
 import re
 import subprocess
 
+import pytest
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 README = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
