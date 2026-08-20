@@ -234,7 +234,7 @@ The reason is that these labels are the eval's ground truth. A label written
 after seeing an 82/100 is partly a label about the 82, and an eval scored
 against it measures agreement with itself. So the blind page writes
 `label_source='blind_eval'`, the review panel writes
-`label_source='review_feedback'`, and `evaluate.py` will read only the first
+`label_source='review_feedback'`, and `evaluate.py` reads only the first
 kind. A blind label writes a row in `labels` and moves nothing: the job's
 status is the pipeline's business, and labelling must not be able to change
 what the pipeline does.
@@ -291,6 +291,7 @@ python -m offerpilot status
 python -m offerpilot match
 python -m offerpilot retry
 python -m offerpilot panel
+python -m offerpilot eval
 ```
 
 `collect` fetches every company in `config.yaml`, upserts, prefilters and sets
@@ -305,6 +306,14 @@ over 15 minutes back to `ready_for_match`, re-prefilters versions orphaned at
 orphan sweep also runs at the start of `collect`, so a crashed run self-heals.
 `panel` serves the review panel and the blind labeling page described above
 and blocks until you stop it; it makes no LLM calls, so it needs no API key.
+`eval` scores the pipeline against the blind labels and writes a timestamped
+JSON result under `evals/results/`; `python run_eval.py` is the same command
+under the name the design spec gives it, and it needs no API key either. What
+it measures is the pipeline's decision rather than the model's: a job the
+prefilter dropped counts as a prediction of "no", so prefilter false negatives
+land in the numbers instead of being invisible by construction, and only
+`blind_eval` labels count -- a label written after seeing the score is partly
+a label about the score.
 
 Every subcommand takes `--db` (default `data/offerpilot.db`), `--config`
 (default `config.yaml`), `--profile` (default `profile.yaml`) and `--limit`
@@ -320,7 +329,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-215 tests, all passing, and CI runs them on every push. They need no network and
+246 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, and the
 panel is driven in-process with FastAPI's `TestClient`.
@@ -337,11 +346,13 @@ requiring a rebuild. `labels`, `review_items.edited_brief_json` and
 
 - No retrieval. No embeddings, no vector store, no Chroma or
   sentence-transformers. Evidence is the structured profile and nothing else.
-- No eval runner. The blind labeling page is built and writes `blind_eval`
-  labels, but nothing reads them yet: the evaluation set has not been
-  assembled or scored, so there are no fit, ranking or groundedness numbers.
-  The 40–60 target the blind page displays is a target, not a count that has
-  been reached.
+- No eval numbers. The harness is built and reads the `blind_eval` labels,
+  but the labeled set has not been assembled, so there are no fit, ranking or
+  groundedness numbers to report and `evals/results/` is empty. The 40–60
+  target the blind page displays is a target, not a count that has been
+  reached. The groundedness checks are heuristics -- unknown evidence ids,
+  numbers and capitalised tokens that appear in neither the profile nor the
+  posting -- so they flag lines worth reading, not lines that are false.
 - No demo mode. `match` needs a real key; `collect`, `status`, `retry` and
   `panel` do not.
 - No Ashby collector and no Playwright careers-page collector. Greenhouse and

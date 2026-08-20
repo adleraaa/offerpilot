@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from offerpilot.config import load_config, config_hash, git_commit
 from offerpilot.profile import load_profile
@@ -132,12 +133,14 @@ def main(argv=None):
                     "survivors against your profile, and queues them for your "
                     "approval. Nothing is ever sent to an employer.")
     p.add_argument("command",
-                   choices=["collect", "match", "status", "retry", "panel"],
+                   choices=["collect", "match", "status", "retry", "panel",
+                            "eval"],
                    help="collect: pull postings from configured ATS boards. "
                         "match: score ready jobs with the LLM. "
                         "status: counts by pipeline status. "
                         "retry: reset errored jobs and sweep orphans. "
-                        "panel: serve the local review panel.")
+                        "panel: serve the local review panel. "
+                        "eval: score the pipeline against blind labels.")
     p.add_argument("--db", default="data/offerpilot.db",
                    help="SQLite path (default: %(default)s)")
     p.add_argument("--config", default="config.yaml",
@@ -192,8 +195,19 @@ def main(argv=None):
         print(cmd_status(conn))
     elif args.command == "retry":
         print(cmd_retry(conn, profile))
+    elif args.command == "eval":
+        # Imported here for the same reason as the panel below: the
+        # pipeline subcommands should not pay to import the eval harness.
+        from offerpilot.evaluate import run_eval as _run_eval
+        eval_cfg = cfg.get("eval") or {}
+        # Same rendering as `python run_eval.py`, which is the same call.
+        print(json.dumps(
+            _run_eval(conn, profile,
+                      results_dir=eval_cfg.get("results_dir", "evals/results"),
+                      precision_at=eval_cfg.get("precision_at", [5, 10])),
+            indent=2))
     elif args.command == "panel":
-        # Imported here so the other four subcommands never pay for
+        # Imported here so the other subcommands never pay for
         # FastAPI's import time.
         from offerpilot.panel import app as panel_app
         panel_cfg = cfg.get("panel") or {}

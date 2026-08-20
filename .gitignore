@@ -9,3 +9,7 @@ __pycache__/
 .venv/
 
 .superpowers/
+
+# Eval results are evidence, not build output: keep them tracked even if a
+# broader ignore rule ever covers this neighbourhood.
+!evals/results/
