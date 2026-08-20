@@ -423,3 +423,69 @@ def test_blind_page_and_its_script_are_served(client):
     assert page.status_code == 200
     assert "Blind labeling" in page.text
     assert client.get("/static/blind.js").status_code == 200
+
+
+def test_blind_next_sends_exactly_these_keys_and_nothing_else(client, seeded):
+    """An allowlist, because the denylist above only catches known names.
+
+    `test_blind_next_hides_every_model_output` greps the serialized body for
+    eight field names, which means a model output shipped under a *ninth*
+    name passes it: adding `"priority": total_score` to the job dict leaks the
+    score and trips none of those words. The guarantee this feature rests on
+    is "nothing but the posting and the profile", so it has to be pinned as a
+    closed set of keys -- then widening the payload fails here by default and
+    a human has to decide the new field is not model output.
+    """
+    _, vid = seeded
+    body = client.get("/api/blind/next").json()
+    assert set(body) == {"job", "remaining", "profile_summary"}
+    assert set(body["job"]) == {"job_version_id", "title", "company_id",
+                                "location", "description_text", "url"}
+    assert set(body["profile_summary"]) == {"identity", "constraints",
+                                            "skills", "experiences"}
+    for exp in body["profile_summary"]["experiences"]:
+        assert set(exp) == {"id", "title", "summary"}
+    # The exhausted branch is a second `return` and can drift on its own.
+    client.post(f"/api/blind/{vid}/label", json={"fit_label": "good_fit"})
+    empty = client.get("/api/blind/next").json()
+    assert empty["job"] is None
+    assert set(empty) == {"job", "remaining", "profile_summary"}
+
+
+def test_blind_label_twice_is_a_conflict_not_a_second_ground_truth(client,
+                                                                   seeded):
+    """One job version, one blind label -- the eval reads every row it finds.
+
+    The review route gets this for free: `db.set_status` refuses the second
+    transition, so the label after it is never written. This route moves no
+    status on purpose, so it has to refuse on its own, or a double-click
+    leaves `run_eval` two contradictory ground truths for one job and no way
+    to tell which one the human meant.
+    """
+    path, vid = seeded
+    first = client.post(f"/api/blind/{vid}/label", json={"fit_label": "good_fit"})
+    assert first.status_code == 200
+    second = client.post(f"/api/blind/{vid}/label", json={"fit_label": "poor_fit"})
+    assert second.status_code == 409
+    conn = db.connect(path)
+    rows = db.get_labels(conn, version_id=vid, label_source="blind_eval")
+    assert [r["fit_label"] for r in rows] == ["good_fit"]
+    conn.close()
+
+
+def test_blind_javascript_disables_the_buttons_while_the_post_is_in_flight():
+    """The 409 is the backstop; the page must not fire the second POST at all.
+
+    `if (res.ok) next()` only re-renders after the await, so between the first
+    click and the response the other two verdict buttons are still live. This
+    is a source assertion because the suite has no JavaScript runtime -- what
+    it pins is the ordering: disabled before the POST, re-enabled after it.
+    """
+    source = (STATIC / "blind.js").read_text(encoding="utf-8")
+    post = source.index("/label")
+    assert "disabled = true" in source, "blind.js never disables a button"
+    assert source.index("disabled = true") < post, (
+        "blind.js must disable the verdict buttons before it POSTs a label")
+    assert "finally" in source, (
+        "blind.js must re-enable the buttons even when the POST fails")
+    assert source.index("disabled = false") > post

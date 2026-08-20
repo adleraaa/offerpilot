@@ -224,8 +224,11 @@ link only for `http`/`https` and falls back to plain text otherwise, so a
 subtracted. It shows one job posting and a summary of your own profile, and
 that is all it is sent: `GET /api/blind/next` carries no score, no subscores,
 no eligibility verdict, no evidence, no brief and not even the job's status.
-A test serializes the whole response and greps it for those words, because the
-guarantee is about the payload, not about what the page chooses to draw.
+The guarantee is about the payload, not about what the page chooses to draw,
+so a test asserts the response's exact set of keys rather than searching it
+for field names it already knows about — a denylist of eight words would pass
+a score shipped as `priority`, and this is the one place where a leak nobody
+notices quietly invalidates every number the eval produces.
 
 The reason is that these labels are the eval's ground truth. A label written
 after seeing an 82/100 is partly a label about the 82, and an eval scored
@@ -235,6 +238,12 @@ against it measures agreement with itself. So the blind page writes
 kind. A blind label writes a row in `labels` and moves nothing: the job's
 status is the pipeline's business, and labelling must not be able to change
 what the pipeline does.
+
+Each job version takes exactly one blind label; a second is a 409 and the
+page disables the verdict buttons until the first one lands. Ground truth
+that contradicts itself is worse than missing ground truth, and since the
+eval reads every `blind_eval` row it finds, a double-click would otherwise
+score the model against both answers.
 
 Candidates come from `db.get_blind_candidates`, which spans every job version
 in the database — including the ones the prefilter threw out at `filtered_out`

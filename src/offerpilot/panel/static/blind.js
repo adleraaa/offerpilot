@@ -56,14 +56,33 @@ async function next() {
   body.appendChild(el("pre", data.job.description_text));
 
   const bar = el("div", null, "decisions");
+  // One job version gets one blind label, and the server returns 409 for a
+  // second. That backstop must not be what a normal double-click hits: the
+  // POST is awaited, and `next()` only redraws afterwards, so without this
+  // the other two verdict buttons stay live for the whole round trip and
+  // "good fit" then "poor fit" both land for the same job.
+  const buttons = [];
+  let posting = false;
   for (const fit of ["good_fit", "uncertain", "poor_fit"]) {
     const b = el("button", fit.replace("_", " "));
     b.addEventListener("click", async () => {
-      const res = await fetch(`/api/blind/${data.job.job_version_id}/label`, {
-        method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({fit_label: fit})});
-      if (res.ok) next();
+      if (posting) return;
+      posting = true;
+      for (const other of buttons) other.disabled = true;
+      try {
+        const res = await fetch(`/api/blind/${data.job.job_version_id}/label`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({fit_label: fit})});
+        if (res.ok) { next(); return; }
+        // Say so rather than looking dead: a 409 here means this version was
+        // already labeled, so the queue is stale and a reload fixes it.
+        $("progress").textContent = `label rejected (HTTP ${res.status})`;
+      } finally {
+        posting = false;
+        for (const other of buttons) other.disabled = false;
+      }
     });
+    buttons.push(b);
     bar.appendChild(b);
   }
   body.appendChild(bar);

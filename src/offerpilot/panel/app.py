@@ -213,17 +213,31 @@ def create_app(db_path: str, profile) -> FastAPI:
 
     @app.post("/api/blind/{version_id}/label")
     def api_blind_label(version_id: int, label: BlindLabel):
-        """Write the human's own verdict, and touch nothing else.
+        """Write the human's own verdict once, and touch nothing else.
 
         No status transition: a blind label is an opinion about the job, not a
         decision about the application, and moving the row would both corrupt
         the review queue and let the label change what the pipeline does.
+
+        That is also why this route has to refuse a repeat itself. `/decision`
+        is protected by accident -- `db.set_status` raises on the second
+        transition, so its label never runs -- and skipping the transition
+        here removes that guard with nothing behind it. The eval reads *every*
+        `blind_eval` row, so a second one is not a correction, it is two
+        contradictory ground truths for one job. The check is not atomic
+        against a concurrent duplicate, but the panel is one human on
+        loopback; what it stops is a double-click and a stale tab.
         """
         with conn() as c:
             exists = c.execute("SELECT 1 FROM job_versions WHERE id=?",
                                (version_id,)).fetchone()
             if exists is None:
                 raise HTTPException(404, "unknown job version")
+            if db.get_labels(c, version_id=version_id,
+                             label_source="blind_eval"):
+                raise HTTPException(
+                    409, "this job version already has a blind label; the "
+                         "eval reads them all, so it gets exactly one")
             db.record_label(c, version_id, label_source="blind_eval",
                             fit_label=label.fit_label,
                             action_label=label.action_label,
