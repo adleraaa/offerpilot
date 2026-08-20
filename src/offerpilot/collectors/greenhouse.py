@@ -15,6 +15,12 @@ def parse(payload: dict, company_id: str) -> list[NormalizedJob]:
     out = []
     for j in payload.get("jobs", []):
         url = j["absolute_url"]
+        try:
+            canonical = canonicalize_url(url)
+        except ValueError as e:
+            # One poisoned posting costs one job, not the whole board.
+            print(f"[greenhouse] skipping {company_id} job {j.get('id')}: {e}")
+            continue
         out.append(NormalizedJob(
             source="greenhouse",
             external_id=str(j["id"]),
@@ -22,7 +28,7 @@ def parse(payload: dict, company_id: str) -> list[NormalizedJob]:
             title=j["title"],
             location=(j.get("location") or {}).get("name", ""),
             url=url,
-            canonical_url=canonicalize_url(url),
+            canonical_url=canonical,
             description_text=strip_html(j.get("content", "")),
             posted_at=j.get("updated_at"),
         ))

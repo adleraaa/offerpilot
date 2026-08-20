@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+
+import pytest
 from offerpilot.collectors import base, greenhouse, lever
 from offerpilot.collectors.base import strip_html
 
@@ -15,6 +17,60 @@ def test_canonicalize_url_strips_tracking_and_slash():
 def test_canonicalize_preserves_query_value_slashes():
     u = "https://x.co/jobs?next=/careers/"
     assert base.canonicalize_url(u) == "https://x.co/jobs?next=%2Fcareers%2F"
+
+
+@pytest.mark.parametrize("url", [
+    "javascript:alert(document.cookie)",
+    "JavaScript:alert(1)",
+    "  javascript:alert(1)",
+    "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+    "vbscript:msgbox(1)",
+    "file:///etc/passwd",
+])
+def test_canonicalize_url_rejects_non_http_schemes(url):
+    """A posting URL is untrusted input; only http(s) may reach the DB."""
+    with pytest.raises(ValueError):
+        base.canonicalize_url(url)
+
+
+def test_canonicalize_url_rejects_a_schemeless_url():
+    with pytest.raises(ValueError):
+        base.canonicalize_url("//evil.example/x")
+
+
+@pytest.mark.parametrize("url", [
+    "https://boards.greenhouse.io/x/jobs/1",
+    "HTTP://Example.com/jobs/2",
+])
+def test_canonicalize_url_still_accepts_http_and_https(url):
+    assert base.canonicalize_url(url).startswith(("http://", "https://"))
+
+
+def test_greenhouse_skips_a_job_whose_url_is_not_http(capsys):
+    """One poisoned posting must cost one job, not the whole board."""
+    payload = {"jobs": [
+        {"id": 1, "title": "Real", "location": {"name": "Remote"},
+         "absolute_url": "https://boards.greenhouse.io/acme/jobs/1",
+         "content": "Good"},
+        {"id": 2, "title": "Poisoned", "location": {"name": "Remote"},
+         "absolute_url": "javascript:alert(1)", "content": "Bad"},
+    ]}
+    jobs = greenhouse.parse(payload, company_id="acme")
+    assert [j.title for j in jobs] == ["Real"]
+    assert "skipping" in capsys.readouterr().out
+
+
+def test_lever_skips_a_job_whose_url_is_not_http(capsys):
+    payload = [
+        {"id": "a", "text": "Real", "categories": {"location": "Remote"},
+         "hostedUrl": "https://jobs.lever.co/acme/a", "descriptionPlain": "ok"},
+        {"id": "b", "text": "Poisoned", "categories": {"location": "Remote"},
+         "hostedUrl": "data:text/html,<script>alert(1)</script>",
+         "descriptionPlain": "bad"},
+    ]
+    jobs = lever.parse(payload, company_id="acme")
+    assert [j.title for j in jobs] == ["Real"]
+    assert "skipping" in capsys.readouterr().out
 
 
 def test_strip_html_unescapes_and_removes_tags():

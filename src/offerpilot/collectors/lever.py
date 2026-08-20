@@ -17,6 +17,12 @@ def parse(payload: list, company_id: str) -> list[NormalizedJob]:
     out = []
     for p in payload:
         url = p["hostedUrl"]
+        try:
+            canonical = canonicalize_url(url)
+        except ValueError as e:
+            # One poisoned posting costs one job, not the whole board.
+            print(f"[lever] skipping {company_id} job {p.get('id')}: {e}")
+            continue
         created = p.get("createdAt")
         posted_at = (datetime.fromtimestamp(created / 1000, tz=timezone.utc).isoformat()
                      if created else None)
@@ -27,7 +33,7 @@ def parse(payload: list, company_id: str) -> list[NormalizedJob]:
             title=p["text"],
             location=(p.get("categories") or {}).get("location", ""),
             url=url,
-            canonical_url=canonicalize_url(url),
+            canonical_url=canonical,
             description_text=p.get("descriptionPlain", ""),
             posted_at=posted_at,
         ))
