@@ -248,13 +248,23 @@ def test_static_assets_are_mounted(client):
         assert client.get(asset).status_code == 200, asset
 
 
-def test_blind_page_route_exists_without_crashing(client):
-    """index.html links to /blind; the blind view itself lands in a later task.
+def test_a_missing_blind_page_is_an_honest_404_not_a_crash(client, tmp_path,
+                                                          monkeypatch):
+    """blind.html ships as package data; a partial install must still answer.
 
-    Until blind.html exists this must be an honest 404, not a FileResponse
-    blowing up on a missing path.
+    This replaced `status_code in (200, 404)`, which was a tautology: with the
+    whole `/blind` route deleted FastAPI returns 404 and the assertion still
+    held, so the test passed whether or not the feature existed. The branch it
+    described -- `page.exists()` guarding `FileResponse`, which raises at send
+    on a missing path -- was never actually exercised, because blind.html is
+    always there. So the file is taken away instead, and the 200 case stays
+    pinned by `test_blind_page_and_its_script_are_served`.
     """
-    assert client.get("/blind").status_code in (200, 404)
+    from offerpilot.panel import app as panel_app
+    monkeypatch.setattr(panel_app, "STATIC_DIR", tmp_path)
+    r = client.get("/blind")
+    assert r.status_code == 404
+    assert "blind labeling page is missing" in r.json()["detail"]
 
 
 @pytest.fixture
