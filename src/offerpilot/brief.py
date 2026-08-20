@@ -39,7 +39,18 @@ class ApplicationBrief(BaseModel):
 
 
 def build_brief_prompts(job_row, profile: Profile, match: MatchResult):
-    """Trusted profile and prior match first, untrusted posting last."""
+    """Trusted profile and prior match first, untrusted posting last.
+
+    Everything the match *model* wrote in prose -- `gaps`, `uncertainties` --
+    is sanitized too, even though BRIEF_USER labels the match section
+    "produced by this system". The scores and `eligibility` really are system
+    facts (ints and a Literal, both pinned by the schema), but the prose was
+    written while reading the untrusted posting, so it can carry a forged
+    delimiter straight out of it. Printing it raw above the delimited block
+    would launder posting text into the trusted half of the prompt -- exactly
+    the defense `_sanitize` exists to hold. Sanitizing after the join, not
+    per element, also catches a forgery split across two list entries.
+    """
     from offerpilot.graph import _sanitize  # single delimiter-stripping impl
 
     user = BRIEF_USER.format(
@@ -49,8 +60,9 @@ def build_brief_prompts(job_row, profile: Profile, match: MatchResult):
         domain=match.domain_score, seniority=match.seniority_score,
         preferences=match.preference_score,
         eligibility=match.eligibility,
-        gaps="; ".join(match.gaps) or "none recorded",
-        uncertainties="; ".join(match.uncertainties) or "none recorded",
+        gaps=_sanitize("; ".join(match.gaps)) or "none recorded",
+        uncertainties=(_sanitize("; ".join(match.uncertainties))
+                       or "none recorded"),
         title=_sanitize(job_row["title"]),
         location=_sanitize(job_row["location"] or ""),
         description=_sanitize(job_row["description_text"]))
