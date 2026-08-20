@@ -9,6 +9,14 @@ llm:
 match:
   score_threshold: 60
   max_auto_retries: 3
+brief:
+  enabled: true
+panel:
+  host: 127.0.0.1
+  port: 8000
+eval:
+  results_dir: evals/results
+  precision_at: [5, 10]
 companies:
   - id: examplecorp
     name: ExampleCorp

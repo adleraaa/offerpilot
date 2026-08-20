@@ -189,7 +189,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-147 tests, all passing, and CI runs them on every push. They need no network and
+157 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, and the LLM client is tested against a fake SDK object.
 
@@ -199,7 +199,8 @@ One SQLite file. Written by the current code: `jobs`, `job_versions`,
 `filter_results`, `companies`, `labels`, `runs`, `run_steps`, `review_items`,
 `llm_usage`. `db.migrate` adds new columns to an existing database rather than
 requiring a rebuild. Created but not written yet: `review_items.brief_json`
-(`db.save_brief` exists; nothing calls it, because the brief node does not).
+(`db.save_brief` and `brief.generate_brief` both exist; nothing calls either,
+because the brief is not in the pipeline yet).
 
 ## What is not built
 
@@ -211,7 +212,12 @@ requiring a rebuild. Created but not written yet: `review_items.brief_json`
   reject or edit path. The label vocabulary and the queries a reviewer would
   need exist (`labels.py`, `db.get_review_queue`, `db.get_blind_candidates`),
   but nothing drives them.
-- No application brief node.
+- The application brief is written but not wired in. `src/offerpilot/brief.py`
+  holds the `ApplicationBrief` model, the prompt pair, a grounding validator
+  that rejects invented evidence ids and talking points falsely marked as
+  tailored, and `generate_brief`. Nothing calls it: the pipeline still ends at
+  the gate, so no brief is generated, stored or displayed, and the match call
+  remains the only LLM call any command makes.
 - No eval runner. The small blind-labeled evaluation set described in the design
   spec has not been assembled or run, so there are no fit, ranking or
   groundedness numbers.
