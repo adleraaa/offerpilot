@@ -1,0 +1,80 @@
+{
+  "match:demo-1": {
+    "eligibility": "pass",
+    "eligibility_reasons": ["Internship open to 2029 graduates; remote friendly."],
+    "eligibility_evidence_excerpt": null,
+    "skills_score": 27, "project_score": 18, "domain_score": 13,
+    "seniority_score": 13, "preference_score": 18,
+    "evidence": [
+      {"source_id": "pathpilot", "section": "projects",
+       "supporting_text": "LLM-powered course planner with structured outputs and fallbacks."},
+      {"source_id": "invoice_tool", "section": "projects",
+       "supporting_text": "Batch OCR pipeline turning scanned invoices into spreadsheets."}
+    ],
+    "gaps": ["No production Kubernetes exposure."],
+    "uncertainties": [],
+    "confidence": 0.86
+  },
+  "brief:demo-1": {
+    "why_it_fits": "The role is agent tooling with structured outputs and evals, which is exactly what PathPilot exercised end to end.",
+    "cited_evidence": [
+      {"source_id": "pathpilot", "section": "projects",
+       "supporting_text": "LLM-powered course planner with structured outputs and fallbacks."}
+    ],
+    "main_gaps": ["No production Kubernetes exposure."],
+    "resume_bullets_to_emphasize": [
+      "Built PathPilot, an LLM course planner with Pydantic-validated structured outputs and deterministic fallbacks.",
+      "Shipped a batch OCR pipeline that turned scanned invoices into spreadsheets."
+    ],
+    "talking_points": [
+      {"theme": "why_this_role", "point": "The posting names evaluation harnesses, which is the part of PathPilot I found hardest and most interesting.", "evidence_source_id": "pathpilot", "generic": true},
+      {"theme": "relevant_project", "point": "PathPilot: structured outputs plus a fallback path when the model returned malformed JSON.", "evidence_source_id": "pathpilot", "generic": true},
+      {"theme": "main_strength", "point": "Turning a flaky model call into a system with defined failure modes.", "evidence_source_id": "invoice_tool", "generic": true},
+      {"theme": "gap_to_address", "point": "I have not run Kubernetes in production; I would want to pair on deploys early.", "evidence_source_id": "pathpilot", "generic": true}
+    ],
+    "outreach_paragraph": null
+  },
+  "match:demo-3": {
+    "eligibility": "fail",
+    "eligibility_reasons": ["Posting is a senior role that includes mentoring the team."],
+    "eligibility_evidence_excerpt": "own our Kubernetes platform end to end and mentor the team",
+    "skills_score": 8, "project_score": 4, "domain_score": 3,
+    "seniority_score": 0, "preference_score": 8,
+    "evidence": [],
+    "gaps": ["Years of platform ownership experience."],
+    "uncertainties": [],
+    "confidence": 0.9
+  },
+  "match:demo-4": {
+    "eligibility": "unknown",
+    "eligibility_reasons": ["Posting does not state eligibility or compensation; onsite expectations are ambiguous."],
+    "eligibility_evidence_excerpt": null,
+    "skills_score": 24, "project_score": 16, "domain_score": 11,
+    "seniority_score": 12, "preference_score": 14,
+    "evidence": [
+      {"source_id": "duckswap", "section": "projects",
+       "supporting_text": "Campus marketplace web app with auth and image uploads."}
+    ],
+    "gaps": ["Unclear whether the role is open to interns."],
+    "uncertainties": ["Onsite vs remote is stated both ways in the posting."],
+    "confidence": 0.55
+  },
+  "brief:demo-4": {
+    "why_it_fits": "Internal tooling in Python and TypeScript maps directly onto DuckSwap, which was a full-stack build with auth.",
+    "cited_evidence": [
+      {"source_id": "duckswap", "section": "projects",
+       "supporting_text": "Campus marketplace web app with auth and image uploads."}
+    ],
+    "main_gaps": ["Unclear whether the role is open to interns."],
+    "resume_bullets_to_emphasize": [
+      "Built DuckSwap, a campus marketplace with authentication and image uploads."
+    ],
+    "talking_points": [
+      {"theme": "why_this_role", "point": "Small-team internal tooling means owning a feature end to end, which is how DuckSwap was built.", "evidence_source_id": "duckswap", "generic": true},
+      {"theme": "relevant_project", "point": "DuckSwap: auth, uploads, and the boring reliability work around them.", "evidence_source_id": "duckswap", "generic": true},
+      {"theme": "main_strength", "point": "Comfortable across Python and TypeScript in the same week.", "evidence_source_id": "duckswap", "generic": true},
+      {"theme": "gap_to_address", "point": "I would ask up front whether this req is open to a current student.", "evidence_source_id": "duckswap", "generic": true}
+    ],
+    "outreach_paragraph": null
+  }
+}

@@ -1,0 +1,31 @@
+# SYNTHETIC DEMO DATA. Alex Doe is not a real person; every experience id
+# below names a fictional project. This file exists so `offerpilot demo` has
+# something to score against without touching anyone's real profile.yaml.
+identity:
+  name: Alex Doe
+  education: "B.S. Computer Science, Example University (SYNTHETIC DEMO DATA)"
+  graduation: "2029-05"
+constraints:
+  locations: ["New York, NY", "Hoboken, NJ"]
+  remote_ok: true
+  pay_floor_hourly_usd: 20
+  work_authorization: permanent_resident
+  employment_types: ["internship", "part_time"]
+  excluded_companies: ["excludedcorp"]
+skills:
+  languages: [Python, TypeScript, SQL]
+  frameworks: [FastAPI, LangGraph, Next.js]
+  ai_ml: [LLM APIs, structured outputs, prompt design, evals]
+experiences:
+  - id: pathpilot
+    title: PathPilot
+    summary: LLM-powered course planner with structured outputs and fallbacks.
+    skills: [Python, LLM APIs, FastAPI]
+  - id: duckswap
+    title: DuckSwap
+    summary: Campus marketplace web app with auth and image uploads.
+    skills: [TypeScript, Next.js, SQL]
+  - id: invoice_tool
+    title: Invoice Extractor
+    summary: Batch OCR pipeline turning scanned invoices into spreadsheets.
+    skills: [Python, OCR, pandas]

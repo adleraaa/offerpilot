@@ -146,13 +146,15 @@ def main(argv=None):
                     "approval. Nothing is ever sent to an employer.")
     p.add_argument("command",
                    choices=["collect", "match", "status", "retry", "panel",
-                            "eval"],
+                            "eval", "demo"],
                    help="collect: pull postings from configured ATS boards. "
                         "match: score ready jobs with the LLM. "
                         "status: counts by pipeline status. "
                         "retry: reset errored jobs and sweep orphans. "
                         "panel: serve the local review panel. "
-                        "eval: score the pipeline against blind labels.")
+                        "eval: score the pipeline against blind labels. "
+                        "demo: seed a throwaway database with synthetic data "
+                        "and serve the panel; needs no config and no API key.")
     p.add_argument("--db", default="data/offerpilot.db",
                    help="SQLite path (default: %(default)s)")
     p.add_argument("--config", default="config.yaml",
@@ -162,6 +164,15 @@ def main(argv=None):
     p.add_argument("--limit", type=int, default=None,
                    help="process at most N jobs (collect, match)")
     args = p.parse_args(argv)
+
+    # Intercepted before everything below, because the whole promise of demo
+    # mode is that it runs on a clean checkout: no config.yaml, no
+    # profile.yaml, no API key, and no database at `--db`. It brings its own
+    # synthetic profile and seeds a temp database of its own.
+    if args.command == "demo":
+        from offerpilot.demo import run_demo
+        run_demo(host="127.0.0.1", port=8000)
+        return
 
     # Read config first: a missing config must fail before we create a DB.
     cfg = load_config(args.config, strict=(args.command in {"collect", "match"}))

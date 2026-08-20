@@ -277,6 +277,27 @@ Python 3.11 or newer.
 
 ```
 pip install -e .
+python -m offerpilot demo
+```
+
+`demo` is the whole pipeline with no setup: no `config.yaml`, no
+`profile.yaml`, no API key and no network call. It seeds a throwaway SQLite
+database in a temp directory from the five synthetic postings and the synthetic
+profile in `demo/`, runs them through the real prefilter and the real compiled
+graph with a `MockLLM` replaying `demo/recorded_outputs.json`, and serves the
+review panel on `127.0.0.1:8000`. The fixtures are chosen so each terminal
+state is visible: two jobs reach `pending_review` (one of them with eligibility
+`unknown`, so the panel's unresolved-eligibility banner has something to show),
+one is `eligibility_failed`, and two are `filtered_out` by the deterministic
+rules — one below the pay floor, one on the exclusion list. Those two have no
+recorded output at all, and `MockLLM` raises `KeyError` rather than inventing
+one, so the demo cannot quietly stop dropping them before the model call.
+`MockLLM` also calls the same `validate` callback the real client does, so the
+grounding check is armed on this path too.
+
+For a real run:
+
+```
 cp config.example.yaml config.yaml
 cp profile.example.yaml profile.yaml
 ```
@@ -292,6 +313,7 @@ python -m offerpilot match
 python -m offerpilot retry
 python -m offerpilot panel
 python -m offerpilot eval
+python -m offerpilot demo
 ```
 
 `collect` fetches every company in `config.yaml`, upserts, prefilters and sets
@@ -306,6 +328,8 @@ over 15 minutes back to `ready_for_match`, re-prefilters versions orphaned at
 orphan sweep also runs at the start of `collect`, so a crashed run self-heals.
 `panel` serves the review panel and the blind labeling page described above
 and blocks until you stop it; it makes no LLM calls, so it needs no API key.
+`demo` is described above and is the one subcommand that reads no config,
+no profile and no `--db`; it brings its own.
 `eval` scores the pipeline against the blind labels and writes a timestamped
 JSON result under `evals/results/`; `python run_eval.py` is a shim that hands
 its arguments to that same branch, so the spec's name and this one enforce the
@@ -337,7 +361,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-246 tests, all passing, and CI runs them on every push. They need no network and
+270 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, and the
 panel is driven in-process with FastAPI's `TestClient`.
@@ -361,8 +385,11 @@ requiring a rebuild. `labels`, `review_items.edited_brief_json` and
   reached. The groundedness checks are heuristics -- unknown evidence ids,
   numbers and capitalised tokens that appear in neither the profile nor the
   posting -- so they flag lines worth reading, not lines that are false.
-- No demo mode. `match` needs a real key; `collect`, `status`, `retry` and
-  `panel` do not.
+- No recorded *real* model outputs. `demo` exists and needs no key, but the
+  outputs it replays from `demo/recorded_outputs.json` were written by hand to
+  exercise each terminal state, not captured from a live model. Only `match`
+  needs a real key; `collect`, `status`, `retry`, `panel`, `eval` and `demo` do
+  not.
 - No Ashby collector and no Playwright careers-page collector. Greenhouse and
   Lever are the only sources.
 - Neither LLM node has ever been run against a real API key. Every test of the

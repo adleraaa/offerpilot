@@ -1,0 +1,57 @@
+[
+  {
+    "source": "greenhouse",
+    "external_id": "demo-1",
+    "company_id": "examplecorp",
+    "title": "AI Engineering Intern",
+    "location": "Remote",
+    "url": "https://example.invalid/jobs/demo-1",
+    "canonical_url": "https://example.invalid/jobs/demo-1",
+    "description_text": "SYNTHETIC DEMO POSTING. ExampleCorp is hiring an AI Engineering Intern to build agent tooling in Python. You will work on LLM structured outputs, evaluation harnesses, and FastAPI services. Open to students graduating in 2029. Pay: $32 - $45 per hour. Remote friendly.",
+    "posted_at": "2026-08-01T00:00:00Z"
+  },
+  {
+    "source": "greenhouse",
+    "external_id": "demo-2",
+    "company_id": "examplecorp",
+    "title": "Data Entry Assistant",
+    "location": "Hoboken, NJ",
+    "url": "https://example.invalid/jobs/demo-2",
+    "canonical_url": "https://example.invalid/jobs/demo-2",
+    "description_text": "SYNTHETIC DEMO POSTING. Part-time data entry support for the operations team. Compensation: $13 - $15 per hour. No prior experience needed.",
+    "posted_at": "2026-08-02T00:00:00Z"
+  },
+  {
+    "source": "lever",
+    "external_id": "demo-3",
+    "company_id": "samplestartup",
+    "title": "Senior Platform Engineer",
+    "location": "New York, NY",
+    "url": "https://example.invalid/jobs/demo-3",
+    "canonical_url": "https://example.invalid/jobs/demo-3",
+    "description_text": "SYNTHETIC DEMO POSTING. SampleStartup is hiring a senior platform engineer. You will own our Kubernetes platform end to end and mentor the team.",
+    "posted_at": "2026-08-03T00:00:00Z"
+  },
+  {
+    "source": "lever",
+    "external_id": "demo-4",
+    "company_id": "samplestartup",
+    "title": "Software Engineer, Internal Tools",
+    "location": "New York, NY",
+    "url": "https://example.invalid/jobs/demo-4",
+    "canonical_url": "https://example.invalid/jobs/demo-4",
+    "description_text": "SYNTHETIC DEMO POSTING. Build internal tooling in Python and TypeScript. The team is small and scrappy. Compensation and eligibility details are handled case by case; reach out to discuss. Some onsite collaboration expected, and we are also open to remote.",
+    "posted_at": "2026-08-04T00:00:00Z"
+  },
+  {
+    "source": "greenhouse",
+    "external_id": "demo-5",
+    "company_id": "excludedcorp",
+    "title": "Backend Intern",
+    "location": "Remote",
+    "url": "https://example.invalid/jobs/demo-5",
+    "canonical_url": "https://example.invalid/jobs/demo-5",
+    "description_text": "SYNTHETIC DEMO POSTING. ExcludedCorp is hiring backend interns. Pay: $30 per hour. This company is on the candidate's exclusion list, so the deterministic prefilter drops it before any model call.",
+    "posted_at": "2026-08-05T00:00:00Z"
+  }
+]
