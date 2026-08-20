@@ -275,9 +275,15 @@ Binding loopback is not the whole story, though, because a page already open in
 your browser can reach loopback too: any site can point a hostname it controls
 at `127.0.0.1` and script requests to it, and those arrive on the loopback
 interface, from your own browser, with no auth to fail. The Host header is what
-separates them from your own tab, so the app checks it — `TrustedHostMiddleware`
-allows `127.0.0.1`, `localhost` and whatever host `serve` was told to bind, and
-answers 400 to anything else. FastAPI's interactive docs are off for the same
+separates them from your own tab, so the app checks it: `127.0.0.1`,
+`localhost` and whatever host `serve` was told to bind are allowed, and
+anything else gets a 400. The check is a few lines of middleware rather than
+Starlette's `TrustedHostMiddleware`, which strips the port at the *first*
+colon and so reads the `Host: [::1]:8000` a browser sends to an IPv6 loopback
+bind as the literal `[` — a supported `panel.host` that 400s its own page.
+Brackets and port are parsed off properly here and the hostname is matched
+whole, so `[::2]` is still refused by a `::1` bind. Tests drive requests
+through the app `serve` builds, not just the arguments it hands uvicorn. FastAPI's interactive docs are off for the same
 reason: `/docs` and `/redoc` are script tags pointing at a CDN, loaded into the
 same origin as the page that approves jobs, and this app's only API consumer is
 the two static pages next to it, so `docs_url`, `redoc_url` and `openapi_url`
@@ -571,7 +577,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-294 tests, all passing, and CI runs them on every push. They need no network and
+304 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, the panel
 is driven in-process with FastAPI's `TestClient`, and the graph is exercised

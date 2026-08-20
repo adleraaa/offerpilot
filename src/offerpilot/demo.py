@@ -162,6 +162,7 @@ def run_demo(*, serve_panel: bool = True, host: str = "127.0.0.1",
         # Resolved before the banner: announcing an address the panel then
         # refuses to bind would read as a crash rather than as the refusal.
         host = panel_app.require_loopback(host)
-        print(f"review panel on http://{host}:{port}  (ctrl-c to stop)")
+        print(f"review panel on {panel_app.panel_url(host, port)}  "
+              f"(ctrl-c to stop)")
         panel_app.serve(db_path, profile, host=host, port=port)
     return db_path

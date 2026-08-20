@@ -257,5 +257,6 @@ def main(argv=None):
         except ValueError as e:
             print(e)
             raise SystemExit(1)
-        print(f"review panel on http://{host}:{port}  (ctrl-c to stop)")
+        print(f"review panel on {panel_app.panel_url(host, port)}  "
+              f"(ctrl-c to stop)")
         panel_app.serve(args.db, profile, host=host, port=port)

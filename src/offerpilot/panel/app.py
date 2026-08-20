@@ -6,8 +6,8 @@ approve a job and write a label, so it must not be reachable from anywhere
 but the loopback interface. `require_loopback` enforces that at the bind,
 because `cli` reads `panel.host` out of a config file and hands it straight
 down. The bind is only half of it, though, since a page in the user's own
-browser reaches loopback too; `TrustedHostMiddleware` in `create_app` is the
-other half, and the same reasoning is why the interactive API docs are off.
+browser reaches loopback too; the Host allowlist in `create_app` is the other
+half, and the same reasoning is why the interactive API docs are off.
 
 Everything a route returns is JSON, verbatim. Job text is untrusted, and the
 escaping happens exactly once, in the browser, where `panel.js` writes it with
@@ -32,7 +32,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.datastructures import Headers
+from starlette.responses import PlainTextResponse
 
 from offerpilot.brief import ApplicationBrief
 from offerpilot.labels import ActionLabel, FitLabel, RejectionReason
@@ -43,8 +44,65 @@ STATIC_DIR = pathlib.Path(__file__).parent / "static"
 # The names a browser may legitimately use to reach a loopback bind, plus the
 # one `TestClient` sends. `serve` adds whatever host it was actually told to
 # bind. See `create_app` for why a Host allowlist is not redundant with the
-# loopback bind, and for the IPv6 caveat.
+# loopback bind.
 ALLOWED_HOSTS = ("127.0.0.1", "localhost", "testserver")
+
+
+def _normalize_host(value: str) -> str:
+    """The hostname in a `Host` header, with brackets and port removed.
+
+    `[::1]:8000` -> `::1`, `127.0.0.1:8000` -> `127.0.0.1`, `::1` -> `::1`.
+    An IPv6 literal is full of colons, so the port is whatever follows the
+    closing bracket, or -- unbracketed -- only ever the single colon in a
+    name-or-IPv4 host. Anything malformed (unclosed bracket, junk after the
+    literal, a non-numeric port) is returned as it arrived, which no
+    allowlist entry can equal: refusal by falling through, not by guessing.
+    """
+    value = value.strip()
+    if value.startswith("["):
+        end = value.find("]")
+        if end == -1:
+            return value
+        host, rest = value[1:end], value[end + 1:]
+        if rest and not (rest.startswith(":") and rest[1:].isdigit()):
+            return value
+        return host
+    if value.count(":") == 1:
+        host, _, port = value.partition(":")
+        return host if port.isdigit() else value
+    return value
+
+
+class HostAllowlistMiddleware:
+    """Refuse any request whose `Host` is not one this bind answers to.
+
+    Starlette's `TrustedHostMiddleware` cannot express this allowlist: it
+    reduces the header with `split(":")[0]`, so a browser pointed at an IPv6
+    loopback bind sends `Host: [::1]:8000` and it compares the literal `"["`,
+    400ing every request including `/`. Putting `"["` in the allowlist would
+    "fix" that by matching every bracketed IPv6 literal in existence, which is
+    the entire set an attacker picks from -- so the header is parsed properly
+    here instead and matched whole.
+    """
+
+    def __init__(self, app, allowed_hosts):
+        self.app = app
+        self.allowed = {h for h in (_normalize_host(a) for a in allowed_hosts)
+                        if h}
+
+    async def __call__(self, scope, receive, send):
+        # Only HTTP is checked because only HTTP is served -- there is no
+        # websocket route to reach, and a `PlainTextResponse` cannot answer a
+        # handshake anyway. Adding one means extending this.
+        if scope["type"] == "http":
+            host = _normalize_host(Headers(scope=scope).get("host", ""))
+            if not host or host not in self.allowed:
+                response = PlainTextResponse("Invalid host header",
+                                             status_code=400)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
 
 # The only three transitions `pending_review` allows (db.ALLOWED_TRANSITIONS).
 _ACTION_TO_STATUS = {"approve": "approved", "reject": "rejected",
@@ -93,11 +151,11 @@ def create_app(db_path: str, profile, allowed_hosts=ALLOWED_HOSTS) -> FastAPI:
     # controls at 127.0.0.1 and script requests to it -- DNS rebinding -- and
     # those arrive on loopback, from the user's browser, with no auth to fail.
     # The Host header is the only thing that separates them from the user's
-    # own tab, so it is checked. (Starlette matches on the header with the
-    # port split off at the first colon, which a bracketed IPv6 literal like
-    # `[::1]:8000` does not survive; `require_loopback` still accepts a `::1`
-    # bind, so that combination would 400 here. Bind 127.0.0.1.)
-    app.add_middleware(TrustedHostMiddleware,
+    # own tab, so it is checked -- against the bind and the names that reach
+    # it, matched whole. Not `TrustedHostMiddleware`: it splits the port off
+    # at the first colon, which turns the `Host: [::1]:8000` a browser sends
+    # to a `::1` bind into `[` and 400s the page `require_loopback` blessed.
+    app.add_middleware(HostAllowlistMiddleware,
                        allowed_hosts=list(allowed_hosts))
 
     # Once, here, rather than on every request. `db.migrate` is idempotent, so
@@ -323,6 +381,22 @@ def require_loopback(host: str) -> str:
             f"approves jobs and writes labels with no auth, so it must not be "
             f"reachable off this machine: bind 127.0.0.1 and tunnel to it.")
     return host
+
+
+def panel_url(host: str, port: int) -> str:
+    """The address to actually type at a browser for this bind.
+
+    An IPv6 literal has to be bracketed inside a URL authority -- otherwise
+    the colons of the address run into the colon before the port, and
+    `http://::1:8000` is not something a browser can open. `require_loopback`
+    accepts `::1`, and the banner is the only instruction the user gets.
+    """
+    bare = host.strip("[]")
+    try:
+        bracket = ipaddress.ip_address(bare).version == 6
+    except ValueError:
+        bracket = False
+    return f"http://{f'[{bare}]' if bracket else bare}:{port}"
 
 
 def serve(db_path: str, profile, host: str = "127.0.0.1",

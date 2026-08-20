@@ -761,3 +761,100 @@ def test_a_foreign_host_header_is_refused(client):
     for good in ("127.0.0.1:8000", "localhost:8000", "localhost"):
         assert client.get("/api/queue",
                           headers={"Host": good}).status_code == 200, good
+
+
+def _app_serve_would_run(seeded, profile, recorded_uvicorn, host):
+    """The app `serve` actually hands uvicorn, driven for real.
+
+    `test_serve_passes_an_explicit_loopback_host_through` asserts on the
+    kwargs and stops there, so it went on passing for `::1` while every
+    request to that bind 400'd. Capturing the app and putting requests
+    through it is the only way that assurance is worth anything.
+    """
+    from offerpilot.panel import app as panel_app
+    path, _ = seeded
+    recorded_uvicorn.clear()
+    panel_app.serve(path, profile, host=host, port=8000)
+    return TestClient(recorded_uvicorn[0][0])
+
+
+def test_an_ipv6_loopback_bind_answers_the_browsers_bracketed_host(
+        seeded, profile, recorded_uvicorn):
+    """`::1` is a supported bind, so the panel has to answer on it.
+
+    `require_loopback` blesses `::1` and `cli` reads `panel.host` straight out
+    of `config.yaml`, so one line of config puts the panel on the IPv6
+    loopback. A browser sent there sends `Host: [::1]:8000`, and a Host check
+    that splits the port off at the *first* colon reduces that to the literal
+    `[` -- 400 on every request including `/`, so the page never loads.
+    """
+    client = _app_serve_would_run(seeded, profile, recorded_uvicorn, "::1")
+    for good in ("[::1]:8000", "[::1]", "::1"):
+        assert client.get("/", headers={"Host": good}).status_code == 200, good
+        assert client.get("/api/queue",
+                          headers={"Host": good}).status_code == 200, good
+
+
+def test_a_bracketed_ipv6_host_is_matched_exactly_not_waved_through(
+        seeded, profile, recorded_uvicorn):
+    """Allowlisting the `[` the naive split produces would be strictly worse.
+
+    It would match every bracketed IPv6 literal there is, which is the whole
+    class of hosts an attacker gets to choose from. A `::1` bind allows `::1`.
+    """
+    client = _app_serve_would_run(seeded, profile, recorded_uvicorn, "::1")
+    for bad in ("[::2]:8000", "[dead:beef::1]:8000", "[", "[]", "[::1",
+                "[::1]evil.example.com", "evil.example.com", ""):
+        assert client.get("/api/queue",
+                          headers={"Host": bad}).status_code == 400, bad
+
+
+def test_an_ipv4_bind_does_not_answer_the_ipv6_loopback(client):
+    """The allowlist is the bind plus the names that reach it, not `loopback`.
+
+    The default bind is `127.0.0.1`; nothing is listening on `::1`, so a
+    request claiming to be for it did not come from the user's own tab.
+    """
+    assert client.get("/api/queue",
+                      headers={"Host": "[::1]:8000"}).status_code == 400
+
+
+def test_an_unusual_ipv4_loopback_bind_answers_with_and_without_a_port(
+        seeded, profile, recorded_uvicorn):
+    """The reason `serve` adds the bound host to the allowlist at all."""
+    client = _app_serve_would_run(seeded, profile, recorded_uvicorn,
+                                  "127.0.0.53")
+    for good in ("127.0.0.53:8000", "127.0.0.53"):
+        assert client.get("/api/queue",
+                          headers={"Host": good}).status_code == 200, good
+
+
+@pytest.mark.parametrize("host,expected", [
+    ("127.0.0.1", "http://127.0.0.1:8000"),
+    ("localhost", "http://localhost:8000"),
+    ("127.0.0.53", "http://127.0.0.53:8000"),
+    ("::1", "http://[::1]:8000"),
+    ("[::1]", "http://[::1]:8000"),
+])
+def test_panel_url_brackets_an_ipv6_literal(host, expected):
+    """`http://::1:8000` is not a URL a browser can open.
+
+    An IPv6 literal has to be bracketed in an authority, or the colons of the
+    address and the colon before the port are indistinguishable.
+    """
+    from offerpilot.panel import app as panel_app
+    assert panel_app.panel_url(host, 8000) == expected
+
+
+def test_panel_cli_prints_an_openable_url_for_an_ipv6_bind(tmp_path,
+                                                           monkeypatch, capsys):
+    """The banner is the only instruction the user gets; it has to be right."""
+    from offerpilot import cli
+    from offerpilot.panel import app as panel_app
+
+    cfg = tmp_path / "v6.yaml"
+    cfg.write_text("panel:\n  host: '::1'\n  port: 8000\n", encoding="utf-8")
+    monkeypatch.setattr(panel_app, "serve", lambda *a, **kw: None)
+    cli.main(["panel", "--db", str(tmp_path / "cli.db"), "--config", str(cfg),
+              "--profile", "profile.example.yaml"])
+    assert "http://[::1]:8000" in capsys.readouterr().out
