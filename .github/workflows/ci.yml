@@ -1,8 +1,10 @@
 name: tests
 
 on:
+  # Every branch, not just main. The work happens on feature branches,
+  # so a main-only trigger meant a push ran nothing while the README
+  # promised the suite ran on every push.
   push:
-    branches: [main]
   pull_request:
 
 jobs:

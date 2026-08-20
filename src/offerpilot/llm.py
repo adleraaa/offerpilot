@@ -6,8 +6,12 @@ from pydantic import BaseModel, ValidationError
 # DeepSeek charges double during two published windows, and prices cached
 # prompt tokens ~31x below uncached ones. Both matter here: OfferPilot resends
 # an identical system prompt plus the whole profile for every job in a batch,
-# so after the first call almost every prompt token is a cache hit. Rates and
-# windows: https://api-docs.deepseek.com/quick_start/pricing/ (checked
+# so some prompt tokens come back as hits. Do not assume most of them do -- in
+# the 2026-08-20 smoke run only 21.9% of prompt tokens were billed at the hit
+# rate, in 1024-token blocks, and three of the six calls were billed entirely
+# at the miss rate. That is why the fallback below charges every unattributed
+# token at the miss rate rather than guessing. Rates and windows:
+# https://api-docs.deepseek.com/quick_start/pricing/ (checked
 # 2026-08-20); the numbers themselves live in config, only the shape is here.
 _PEAK_HOURS_UTC = frozenset({1, 2, 3, 6, 7, 8, 9})
 

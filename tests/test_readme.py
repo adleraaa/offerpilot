@@ -234,3 +234,93 @@ def test_readme_test_count_matches_the_suite(request):
     assert claimed, "README no longer states a test count"
     assert int(claimed[0]) == collected, (
         f"README claims {claimed[0]} tests, suite has {collected}")
+
+
+def test_readme_ci_claim_matches_the_workflow_trigger():
+    """"CI runs them on every push" is a claim about ci.yml, so check ci.yml.
+
+    The workflow used to trigger on `push` only for `main`. All the work
+    happens on feature branches, so pushing ran nothing at all while the
+    README told a reader that every push was tested -- the badge stayed green
+    because nothing had run, which is the worst way for a claim to be wrong.
+    """
+    import yaml
+
+    workflow = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    assert workflow.exists(), "README claims CI, but there is no ci.yml"
+    # PyYAML reads a bare `on:` key as the boolean True (YAML 1.1), so accept
+    # either spelling rather than depending on how the file quotes it.
+    parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    triggers = parsed.get("on", parsed.get(True))
+    assert triggers, f"{workflow} declares no triggers"
+
+    claims_every_push = "CI runs them on every push" in README
+    push = triggers.get("push")
+    if claims_every_push:
+        assert "push" in triggers, (
+            "README claims CI on push; ci.yml has no push trigger")
+        restricted = isinstance(push, dict) and (
+            push.get("branches") or push.get("branches-ignore"))
+        assert not restricted, (
+            "README says CI runs on every push, but ci.yml restricts the push "
+            f"trigger to {restricted}")
+    assert "pull_request" in triggers, "ci.yml no longer runs on pull requests"
+
+
+def test_readme_demo_paragraph_matches_what_seeding_actually_produces(tmp_path):
+    """The demo paragraph claimed "each terminal state is visible". It is not.
+
+    Seeding produces `pending_review`, `eligibility_failed` and
+    `filtered_out`; nothing in `demo/` scores below the threshold or breaks a
+    schema, so `scored_low`, `retryable_error` and `permanent_error` never
+    occur. Running the fixtures is the only honest way to check a sentence
+    about the fixtures -- reading the paragraph against itself would pass no
+    matter what it said.
+    """
+    from offerpilot.demo import seed_demo_db
+    from offerpilot.store import db as store_db
+
+    path = str(tmp_path / "demo.db")
+    seed_demo_db(path)
+    conn = store_db.connect(path)
+    counts = {r["status"]: r["c"] for r in conn.execute(
+        "SELECT status, COUNT(*) c FROM job_versions GROUP BY status")}
+
+    # The states a run can leave a version in: every outcome of `matching`,
+    # plus the prefilter's own terminal state.
+    run_outcomes = store_db.ALLOWED_TRANSITIONS["matching"] | {"filtered_out"}
+
+    # Strip fenced blocks first: a ``` fence flips the pairing of the single
+    # backticks after it, so scanning the raw section finds the gaps between
+    # code spans rather than the code spans themselves.
+    section = re.sub(r"```.*?```", "", _section("## Try it (no API key)"),
+                     flags=re.S)
+
+    # Every state seeding actually reaches has to be named, so a fixture that
+    # starts producing a new outcome cannot go undocumented.
+    named = {s for s in _BACKTICK_RE.findall(section) if s in run_outcomes}
+    assert set(counts) <= named, (
+        f"seeding reaches {sorted(set(counts) - named)}, which the demo "
+        "section never names")
+
+    # And the count it quotes for each one has to be that state's real count.
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+    for status, actual in counts.items():
+        idx = section.index(f"`{status}`")
+        # Only the clause that introduces the state: back to the previous
+        # code span or sentence end. A wider window reads a number word
+        # out of a neighbouring clause as if it were this state's count.
+        clause = re.split(r"[.`]", section[:idx])[-1]
+        nums = re.findall(r"\b(one|two|three|four|five)\b", clause)
+        assert nums, f"the demo section states no count for `{status}`"
+        assert words[nums[-1]] == actual, (
+            f"README says {nums[-1]} job(s) reach `{status}`; seeding "
+            f"produces {actual}")
+
+    # An exhaustiveness claim has to actually be exhaustive.
+    exhaustive = re.search(r"(each|every|all) (terminal |run |)state", section,
+                           re.I)
+    if exhaustive:
+        assert set(counts) >= run_outcomes, (
+            f"the demo section claims {exhaustive.group(0)!r} is visible, but "
+            f"seeding never reaches {sorted(run_outcomes - set(counts))}")

@@ -30,7 +30,7 @@ directory from the five synthetic postings and the synthetic profile in
 a `MockLLM` replaying `demo/recorded_outputs.json`, and serves the review panel
 on <http://127.0.0.1:8000>. Ctrl-C stops it; the temp database is disposable.
 
-The fixtures are chosen so each terminal state is visible: two jobs reach
+The fixtures cover the three states a clean run ends on: two jobs reach
 `pending_review` (one of them with eligibility `unknown`, so the panel's
 unresolved-eligibility banner has something to show), one is
 `eligibility_failed`, and two are `filtered_out` by the deterministic rules —
@@ -40,6 +40,11 @@ the demo cannot quietly stop dropping them before the model call. `MockLLM`
 also calls the same `validate` callback the real client does, so the grounding
 check is armed on this path too. The blind labeling view is at
 <http://127.0.0.1:8000/blind> and works on the same seeded data.
+
+The other three states a run can end on are not on this path: no fixture scores
+below the threshold, and a recorded reply cannot fail the way a live one can,
+so `scored_low`, `retryable_error` and `permanent_error` are exercised in
+`tests/test_graph.py` rather than in the demo.
 
 > **TODO — screenshots.** This README ships without images. Two are worth
 > adding once someone can point a browser at the demo: `docs/images/panel.png`
@@ -188,10 +193,14 @@ go through it so the two cannot drift. It prices three things the flat
 per-token rate this project started with got wrong. Cached and uncached prompt
 tokens are billed separately, from `prompt_cache_hit_tokens` and
 `prompt_cache_miss_tokens` when the endpoint reports them: a cache hit costs
-about a thirtieth of a miss, and since every job in a batch resends the same
-system prompt and the same profile, almost all of them are hits after the first
-call. Any prompt token the split does not account for is charged at the miss
-rate, because a ledger that under-charges is a fuse that never blows. The rate
+about a thirtieth of a miss. Resending the same system prompt and the same
+profile for every job in a batch is what makes hits possible at all, but they
+are a minority of the bill, not most of it — across the six calls in the smoke
+run below, the ledger billed 3,072 of 14,043 prompt tokens (21.9%) at the hit
+rate, in 1,024-token blocks, and charged three of the six calls entirely at the
+miss rate. Any prompt token the split does not account for is charged at the
+miss rate, because a ledger that under-charges is a fuse that never blows. The
+rate
 doubles inside DeepSeek's peak windows, 01:00-04:00 and 06:00-10:00 UTC. And
 the row is keyed on the model the server said it served, not the one that was
 requested — `deepseek-chat` is a legacy alias that comes back as
@@ -430,19 +439,21 @@ live DeepSeek API once, on a throwaway copy of the database. Numbers below are
 measured, not estimated.
 
 **Collect.** 213 postings from two Greenhouse boards in 4.4s, no errors. The
-deterministic prefilter dropped 52 of them before any model call — 32 on
-years-of-experience, 16 on location, 9 on work authorization. `pay_floor`
-parsed nine hourly ranges (`$40 to $55/hr`, `$60-80/hr`, …) and passed all of
-them, correctly: none fell below the configured floor. `graduation_window`
-returned `unknown` on all 213, also correctly — no posting in this corpus
-states a class-year window, so there was nothing to decide on.
+deterministic prefilter dropped 52 of them before any model call: 32 failed
+years-of-experience, 16 location and 9 work authorization, five of them
+failing two rules at once — which is why those three add to 57, not 52.
+`pay_floor` parsed nine hourly figures — five ranges (`$40 to $55/hr`,
+`$60-80/hr`, …) and four single rates (`$75 per hour`, `$50/hour`, …) — and
+passed all nine, correctly: none fell below the configured floor.
+`graduation_window` returned `unknown` on all 213, also correctly — no posting
+in this corpus states a class-year window, so there was nothing to decide on.
 
 **Match and brief.** 5 jobs scored, 6 model calls (5 match, 1 brief).
 
 | | |
 |---|---|
 | Model served | `deepseek-v4-flash` |
-| Prompt tokens | 14,043 |
+| Prompt tokens | 14,043 — 3,072 (21.9%) billed at the cache-hit rate, in 1,024-token blocks; 3 of the 6 calls billed entirely at the miss rate |
 | Completion tokens | 15,950 |
 | Cost | $0.0130 total, ~$0.0026 per job |
 | Schema repair turns | 0 — every call validated on the first attempt |
@@ -455,8 +466,9 @@ Two things worth knowing before running a full batch:
   emits reasoning, and it is billed as output at 3× the cache-miss input rate,
   so cost is driven by the reply rather than by the posting. Estimating from
   prompt size alone understates it by roughly an order of magnitude.
-- **A full batch will hit the spend cap.** At $0.0026 per job, the 161 jobs
-  left at `ready_for_match` cost about $0.42, while `config.example.yaml` caps
+- **A full batch will hit the spend cap.** 161 of the 213 postings cleared the
+  prefilter and 5 were scored, so 156 were left at `ready_for_match`. At
+  $0.0026 per job those cost about $0.41, while `config.example.yaml` caps
   the day at $2.00 and the author's local cap was $0.10 — which would have
   stopped the run around job 38. That is the fuse doing its job, but set the
   cap deliberately rather than discovering it mid-run.
@@ -535,6 +547,11 @@ yet:** no blind labels have been collected, so `evals/results/` is empty.
   `retry`, `panel`, `eval` and `demo` do not.
 - No Ashby collector and no Playwright careers-page collector. Greenhouse and
   Lever are the only sources.
+- No live run of the Lever collector. It has unit tests over recorded payloads,
+  but `config.yaml` has only ever listed Greenhouse boards, so its `fetch` has
+  never been pointed at `api.lever.co` — every job in every database this
+  project has produced came from Greenhouse. Its `parse` is exercised by
+  `tests/test_collectors.py`; its network path is not.
 - No research or tool-calling branch. The graph has three nodes and no tools;
   the model is never given one to call.
 - No screenshots in this README. See the TODO above.
@@ -577,7 +594,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-304 tests, all passing, and CI runs them on every push. They need no network and
+306 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, the panel
 is driven in-process with FastAPI's `TestClient`, and the graph is exercised
