@@ -29,7 +29,14 @@ def _company_label(company) -> str:
     return repr(company)
 
 
-def _collect_company(company, cfg):
+def _collect_company(company):
+    """Fetch and parse one configured board. Reads only this entry.
+
+    Took `cfg` as a second argument and never looked at it. A parameter every
+    caller has to supply and nobody reads is a claim about what this function
+    depends on, and it was false: routing is decided by `company["ats"]` and
+    nothing else.
+    """
     if company["ats"] == "greenhouse":
         return greenhouse.parse(greenhouse.fetch(company["ats_slug"]),
                                 company_id=company["id"])
@@ -55,7 +62,7 @@ def cmd_collect(conn, cfg, profile, limit=None) -> dict:
         if limit is not None and seen >= limit:
             break
         try:
-            jobs = _collect_company(company, cfg)
+            jobs = _collect_company(company)
         except Exception as e:
             print(f"[collect] {_company_label(company)} failed: {e}")
             errors += 1

@@ -19,4 +19,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      # A separate step, not a pytest plugin: a lint failure and a test
+      # failure are different news, and the job summary should say which.
+      - run: python -m ruff check .
       - run: python -m pytest -q

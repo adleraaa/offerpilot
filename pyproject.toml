@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.27"]
+dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -24,6 +24,24 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "offerpilot.panel" = ["static/*"]
+
+[tool.ruff.lint]
+# Pyflakes only, on purpose. `F` is the set of rules that find code which
+# cannot be doing anything -- unused imports (F401), unused locals (F841),
+# undefined and redefined names -- and every one of them is a defect rather
+# than a preference. Style rules are deliberately absent: this repo has no
+# formatter in CI, so `E`/`W`/`I` would fail the build over line breaks and
+# import order and teach a reader to ignore the lint step.
+#
+# `ARG` (unused arguments) was measured and rejected rather than skipped: it
+# reports 57 hits, 52 of them in test doubles whose whole job is to absorb the
+# real signature, and of the 5 in `src/` three are `MockLLM.structured`'s
+# `run_id`/`system`/`user` -- which `test_mock_llm_accepts_every_keyword_the_
+# real_client_takes` requires to be there. A rule that fights a pinned
+# invariant is a rule that gets silenced with noqa, so it is off. The one
+# genuine finding it had, a dead `cfg` on `_collect_company`, was removed by
+# hand instead.
+select = ["F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

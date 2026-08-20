@@ -22,9 +22,7 @@ def seed(conn, desc="Build agents in New York, NY.", ext="1"):
 
 
 def test_collect_applies_prefilter(conn, monkeypatch):
-    calls = {}
-
-    def fake_collect_company(company, cfg):
+    def fake_collect_company(company):
         return [NormalizedJob(
             source="greenhouse", external_id="9", company_id=company["id"],
             title="Staff Engineer", location="San Francisco, CA",
@@ -129,7 +127,7 @@ def test_retry_recovers_a_row_parked_at_retryable_error(conn, profile,
 
 
 def test_collect_isolates_per_job_failures(conn, monkeypatch):
-    def fake_collect_company(company, cfg):
+    def fake_collect_company(company):
         return [
             NormalizedJob(source="greenhouse", external_id="ok1",
                           company_id=company["id"], title="A",

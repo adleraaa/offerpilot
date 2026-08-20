@@ -267,6 +267,42 @@ def test_readme_ci_claim_matches_the_workflow_trigger():
     assert "pull_request" in triggers, "ci.yml no longer runs on pull requests"
 
 
+def test_readme_lint_claim_matches_the_workflow_and_the_config():
+    """"`ruff check .` runs as its own CI step" is three claims about two files.
+
+    A lint step the README describes and ci.yml does not run is a lint step
+    that lints nothing, and the badge stays green either way -- the same shape
+    as the `push`-on-`main`-only bug above. The rule set is a claim too: the
+    README says pyflakes only, and `select` growing would quietly make that
+    false. And a linter CI invokes but the dev extra does not install fails on
+    the runner rather than on the code.
+    """
+    import tomllib
+
+    import yaml
+
+    workflow = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    runs = [step.get("run", "") for job in parsed["jobs"].values()
+            for step in job["steps"]]
+    lint = [r for r in runs if "ruff" in r]
+    assert lint, "README says CI runs ruff; ci.yml has no step that runs it"
+    assert not any("pytest" in r for r in lint), (
+        f"the claim is that ruff is its own step; ci.yml runs it alongside "
+        f"pytest in {lint}, so one failure hides the other")
+
+    config = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    select = config["tool"]["ruff"]["lint"]["select"]
+    assert select == ["F"], (
+        f"README describes the rule set as pyflakes only; pyproject selects "
+        f"{select}")
+    dev = config["project"]["optional-dependencies"]["dev"]
+    assert any(d.replace("-", "_").startswith("ruff") for d in dev), (
+        f"CI runs ruff after `pip install -e .[dev]`, but the dev extra is "
+        f"{dev}")
+
+
 def test_readme_demo_paragraph_matches_what_seeding_actually_produces(tmp_path):
     """The demo paragraph claimed "each terminal state is visible". It is not.
 

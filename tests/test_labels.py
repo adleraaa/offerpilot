@@ -152,7 +152,7 @@ def test_blind_candidates_skip_already_blind_labeled(conn):
 
 
 def test_collect_populates_companies_table(conn, profile, monkeypatch):
-    def fake_collect_company(company, cfg):
+    def fake_collect_company(company):
         return [NormalizedJob(
             source="greenhouse", external_id="9", company_id=company["id"],
             title="SWE Intern", location="Remote",
@@ -174,7 +174,7 @@ def test_collect_survives_a_malformed_company_entry(conn, profile, monkeypatch):
     every entry through an unguarded pre-loop write to `companies` would
     reintroduce the same failure at whole-run granularity.
     """
-    def fake_collect_company(company, cfg):
+    def fake_collect_company(company):
         return [NormalizedJob(
             source="greenhouse", external_id=f"job-{company['id']}",
             company_id=company["id"], title="SWE Intern", location="Remote",

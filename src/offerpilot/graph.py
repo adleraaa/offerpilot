@@ -151,12 +151,17 @@ class GraphContext:
     It rides in the state dict rather than being closed over, so the compiled
     graph can stay a module-level singleton: compiled once, reused for any
     connection, profile or threshold.
+
+    It carried `max_auto_retries` and no node ever read it. That is not a
+    harmless spare field: retries are decided *outside* the graph, in
+    `run_match_for_version`'s exception handlers, from its own parameter. A
+    field here saying otherwise invites the next reader to branch on it inside
+    a node and put the retry budget in two places.
     """
     conn: Any
     llm: Any
     profile: Profile
     threshold: int
-    max_auto_retries: int
     brief_enabled: bool = True
 
 
@@ -331,9 +336,7 @@ def run_match_for_version(conn, llm, profile: Profile, version_row,
     system, user = build_prompts(version_row, profile)
     prompt_input = json.dumps({"system": system, "user": user})
     ctx = GraphContext(conn=conn, llm=llm, profile=profile,
-                       threshold=threshold,
-                       max_auto_retries=max_auto_retries,
-                       brief_enabled=brief_enabled)
+                       threshold=threshold, brief_enabled=brief_enabled)
     try:
         out = build_match_graph().invoke({
             "ctx": ctx, "version_id": vid, "run_id": run_id,

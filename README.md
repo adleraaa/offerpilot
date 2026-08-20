@@ -595,10 +595,14 @@ cite nothing.
 
 ```
 pip install -e ".[dev]"
+python -m ruff check .
 python -m pytest -q
 ```
 
-308 tests, all passing, and CI runs them on every push. They need no network and
+310 tests, all passing, and CI runs them on every push. `ruff check .` runs as
+its own CI step, on pyflakes rules only — unused imports, unused locals,
+undefined names. `[tool.ruff.lint]` in `pyproject.toml` says why the stylistic
+and unused-argument rules are off. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, the panel
 is driven in-process with FastAPI's `TestClient`, and the graph is exercised

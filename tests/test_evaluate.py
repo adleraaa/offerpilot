@@ -356,6 +356,28 @@ def test_hyphenated_compound_of_known_words_is_not_flagged(profile):
     assert "LLM-powered" not in flags["unsupported_proper_nouns"]
 
 
+def test_a_capitalised_common_noun_mid_sentence_is_not_a_proper_noun(profile):
+    """`_STOPWORDS` was the only thing stopping this, and nothing pinned it.
+
+    `_STOPWORDS` reads as dead: a frozenset of ordinary English words sitting
+    next to a filter that already skips sentence-initial ones. It is not --
+    the proper-noun filter consults it -- but deleting that clause left the
+    whole suite green, so nothing here showed what it was for, and the next
+    person to tidy up would have had every reason to delete it.
+    `_is_segment_initial` covers the sentence-opening case and only that one;
+    this is the other one, an LLM capitalising an ordinary noun in the middle
+    of a line, which is grammar rather than a claim about an entity.
+    """
+    brief = {"why_it_fits": "I would fit the Team because the Company ships "
+                            "weekly and the Role is hands-on.",
+             "cited_evidence": [], "main_gaps": [],
+             "resume_bullets_to_emphasize": [], "talking_points": [],
+             "outreach_paragraph": None}
+    flags = groundedness_flags(brief, profile, "We build agent tooling.")
+    assert flags["unsupported_proper_nouns"] == [], (
+        "capitalised common nouns mid-sentence are grammar, not inventions")
+
+
 def test_a_genuine_mid_sentence_proper_noun_is_still_flagged(profile):
     """The heuristic must not be defanged into uselessness."""
     brief = {"why_it_fits": "I shipped this while working at Netflix.",

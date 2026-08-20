@@ -1,4 +1,3 @@
-import json
 import pytest
 from offerpilot.models import NormalizedJob
 from offerpilot.store import db

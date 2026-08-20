@@ -163,20 +163,41 @@ def test_edited_brief_must_validate_against_the_schema(client, seeded):
     assert r.status_code == 422
 
 
-def test_trace_returns_run_steps(client, seeded):
+def test_trace_returns_only_the_requested_versions_run_steps(client, seeded):
+    """The scoping is the part worth pinning, and it was the part that was not.
+
+    This used to seed one job, one run and two steps and assert the two came
+    back in order. Deleting `WHERE r.job_version_id=?` from the query left it
+    green: with a single version in the database, "every step there is" and
+    "this version's steps" are the same two rows. So a second version with its
+    own run is seeded first -- lower `rs.id`, so an unfiltered query would
+    return it ahead of the one asked for.
+
+    `/api/trace` has no caller in `panel.js`; the spec lists a trace view as
+    future UI and this route is what it will read. That is the reason it needs
+    a test that can fail, not the reason it can go untested.
+    """
+    from tests.conftest import _make_job
     path, vid = seeded
     conn = db.connect(path)
-    run_id = conn.execute(
-        "INSERT INTO runs(run_type, job_version_id, status) "
-        "VALUES('match', ?, 'ok') RETURNING id", (vid,)).fetchone()["id"]
-    conn.execute("INSERT INTO run_steps(run_id, node, attempt, status) "
-                 "VALUES(?,'match',1,'ok')", (run_id,))
-    conn.execute("INSERT INTO run_steps(run_id, node, attempt, status) "
-                 "VALUES(?,'brief',1,'ok')", (run_id,))
+    _, other = db.upsert_job(conn, _make_job("2"))
+
+    def add_run(version_id, nodes):
+        run_id = conn.execute(
+            "INSERT INTO runs(run_type, job_version_id, status) "
+            "VALUES('match', ?, 'ok') RETURNING id",
+            (version_id,)).fetchone()["id"]
+        for node in nodes:
+            conn.execute("INSERT INTO run_steps(run_id, node, attempt, status) "
+                         "VALUES(?,?,1,'ok')", (run_id, node))
+
+    add_run(other, ["match", "brief"])
+    add_run(vid, ["match", "brief"])
     conn.commit()
     conn.close()
     body = client.get(f"/api/trace/{vid}").json()
-    assert [s["node"] for s in body["steps"]] == ["match", "brief"]
+    assert [s["node"] for s in body["steps"]] == ["match", "brief"], (
+        f"expected only this version's two steps, got {body['steps']}")
 
 
 def test_panel_javascript_never_uses_innerHTML():
