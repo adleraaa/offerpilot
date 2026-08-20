@@ -122,6 +122,13 @@ function briefEditor(versionId, brief) {
 function decisionBar(versionId) {
   const bar = el("div", null, "decisions");
   const fit = el("select");
+  // The placeholder is appended first so it is the option the browser
+  // preselects. Without it "good_fit" was option zero, so clicking Reject
+  // without touching this dropdown wrote a good_fit label next to the
+  // rejection -- and those rows are auxiliary signal the eval reads, so it
+  // was corrupt data rather than a cosmetic default. An untouched select
+  // sends null below; `Decision.fit_label` is Optional and stores NULL.
+  fit.appendChild(new Option("(fit label)", ""));
   for (const v of ["good_fit", "uncertain", "poor_fit"]) fit.appendChild(new Option(v, v));
   const reason = el("select");
   reason.appendChild(new Option("(rejection reason)", ""));
@@ -136,7 +143,9 @@ function decisionBar(versionId) {
   bar.appendChild(notes);
 
   const send = async (action, actionLabel) => {
-    const body = {action, fit_label: fit.value, action_label: actionLabel,
+    // `|| null` and not `fit.value`: the placeholder's value is the empty
+    // string, which is not in the FitLabel vocabulary and would come back 422.
+    const body = {action, fit_label: fit.value || null, action_label: actionLabel,
                   notes: notes.value || null};
     if (action === "reject") {
       if (!reason.value) { setStatus("pick a rejection reason first"); return; }

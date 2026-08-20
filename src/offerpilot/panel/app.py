@@ -5,7 +5,9 @@ CORS and no session -- that is the boundary, not an omission: the panel can
 approve a job and write a label, so it must not be reachable from anywhere
 but the loopback interface. `require_loopback` enforces that at the bind,
 because `cli` reads `panel.host` out of a config file and hands it straight
-down.
+down. The bind is only half of it, though, since a page in the user's own
+browser reaches loopback too; `TrustedHostMiddleware` in `create_app` is the
+other half, and the same reasoning is why the interactive API docs are off.
 
 Everything a route returns is JSON, verbatim. Job text is untrusted, and the
 escaping happens exactly once, in the browser, where `panel.js` writes it with
@@ -30,12 +32,19 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from offerpilot.brief import ApplicationBrief
 from offerpilot.labels import ActionLabel, FitLabel, RejectionReason
 from offerpilot.store import db
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
+
+# The names a browser may legitimately use to reach a loopback bind, plus the
+# one `TestClient` sends. `serve` adds whatever host it was actually told to
+# bind. See `create_app` for why a Host allowlist is not redundant with the
+# loopback bind, and for the IPv6 caveat.
+ALLOWED_HOSTS = ("127.0.0.1", "localhost", "testserver")
 
 # The only three transitions `pending_review` allows (db.ALLOWED_TRANSITIONS).
 _ACTION_TO_STATUS = {"approve": "approved", "reject": "rejected",
@@ -69,13 +78,43 @@ def _row_to_queue_item(row: sqlite3.Row) -> dict:
             "has_brief": row["brief_json"] is not None}
 
 
-def create_app(db_path: str, profile) -> FastAPI:
-    app = FastAPI(title="OfferPilot Review Panel")
+def create_app(db_path: str, profile, allowed_hosts=ALLOWED_HOSTS) -> FastAPI:
+    # No `/docs`, no `/redoc`, no `/openapi.json`: FastAPI's interactive docs
+    # are two <script> tags pointing at a CDN, loaded into the same origin as
+    # the page that approves jobs and writes labels. This app has exactly one
+    # consumer -- the two static pages next to it -- so the docs buy nothing
+    # and the third-party JS is pure surface. Disabled at the app rather than
+    # routed around, so there is no second URL that still serves them.
+    app = FastAPI(title="OfferPilot Review Panel",
+                  docs_url=None, redoc_url=None, openapi_url=None)
+
+    # `serve` refusing a non-loopback bind stops the LAN; it does not stop a
+    # page already open in this browser. Any site can point a hostname it
+    # controls at 127.0.0.1 and script requests to it -- DNS rebinding -- and
+    # those arrive on loopback, from the user's browser, with no auth to fail.
+    # The Host header is the only thing that separates them from the user's
+    # own tab, so it is checked. (Starlette matches on the header with the
+    # port split off at the first colon, which a bracketed IPv6 literal like
+    # `[::1]:8000` does not survive; `require_loopback` still accepts a `::1`
+    # bind, so that combination would 400 here. Bind 127.0.0.1.)
+    app.add_middleware(TrustedHostMiddleware,
+                       allowed_hosts=list(allowed_hosts))
+
+    # Once, here, rather than on every request. `db.migrate` is idempotent, so
+    # calling it per request broke nothing -- it just put three PRAGMA round
+    # trips and a commit on the read path, and deferred a schema-less database
+    # into a 500 on the first GET instead of a failure at startup.
+    # `init_schema` is `CREATE TABLE IF NOT EXISTS` throughout and ends in
+    # `migrate`, so it is that one migrate plus an empty queue rather than a
+    # crash when the panel is pointed at a path the CLI has not created yet.
+    bootstrap = db.connect(db_path)
+    try:
+        db.init_schema(bootstrap)
+    finally:
+        bootstrap.close()
 
     def conn() -> sqlite3.Connection:
-        c = db.connect(db_path)
-        db.migrate(c)
-        return c
+        return db.connect(db_path)
 
     @app.get("/")
     def index():
@@ -290,4 +329,10 @@ def serve(db_path: str, profile, host: str = "127.0.0.1",
           port: int = 8000) -> None:
     import uvicorn
     require_loopback(host)
-    uvicorn.run(create_app(db_path, profile), host=host, port=port)
+    # The bound host joins the Host allowlist: `require_loopback` blesses more
+    # spellings of loopback than `ALLOWED_HOSTS` names (127.0.0.53, say), and
+    # the panel refusing the address it was just told to bind would be a
+    # self-inflicted 400.
+    hosts = list(ALLOWED_HOSTS) + ([host] if host not in ALLOWED_HOSTS else [])
+    uvicorn.run(create_app(db_path, profile, allowed_hosts=hosts),
+                host=host, port=port)

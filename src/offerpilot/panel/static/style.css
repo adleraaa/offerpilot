@@ -1,8 +1,48 @@
-:root { color-scheme: light dark; --fg: #1a1a1a; --muted: #666; --line: #ddd;
-        --warn-bg: #fff4e5; --warn-fg: #8a4b00; }
+/* Two palettes, one set of tokens.
+
+   `color-scheme: light dark` tells the browser this page handles both, which
+   is what makes it paint a dark canvas and dark native controls for a reader
+   whose OS is dark. That declaration used to sit above a light-only palette
+   and a `body` with no background of its own, so a dark-mode reader got the
+   browser's dark canvas underneath `--fg: #1a1a1a`: 1.08:1, the queue
+   buttons and the whole posting body invisible.
+
+   So every colour on this page is a custom property defined here, the dark
+   block below moves all of them at once, and `body` paints its own ground.
+   The ratios are not a matter of taste: tests/test_panel.py parses this file,
+   computes the WCAG contrast of each pair in both themes, and fails on any
+   colour literal that escapes these two blocks. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #5f6368;
+  --line: #d9dce0;
+  --code-bg: #f1f3f5;
+  --link: #0b5bd3;
+  --warn-bg: #fff4e5;
+  --warn-fg: #7a4200;
+}
+
+/* Tokens only. A layout rule in here would be a second copy of the one it
+   overrides, free to drift from it in one theme and not the other. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --fg: #e7e9ec;
+    --muted: #a6adb6;
+    --line: #333840;
+    --code-bg: #1f2229;
+    --link: #8ab6ff;
+    --warn-bg: #3a2a12;
+    --warn-fg: #f6c67a;
+  }
+}
+
 * { box-sizing: border-box; }
 body { margin: 0; font: 15px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
-       color: var(--fg); }
+       color: var(--fg); background: var(--bg); }
+a { color: var(--link); }
 header { display: flex; gap: 1rem; align-items: baseline; padding: .75rem 1rem;
          border-bottom: 1px solid var(--line); }
 header h1 { font-size: 1.1rem; margin: 0; }
@@ -30,5 +70,5 @@ textarea { width: 100%; font-family: ui-monospace, monospace; font-size: .85rem;
 .decisions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
              border-top: 1px solid var(--line); padding-top: 1rem; }
 .decisions button { padding: .4rem .8rem; cursor: pointer; }
-pre { white-space: pre-wrap; background: #0000000a; padding: .8rem;
+pre { white-space: pre-wrap; background: var(--code-bg); padding: .8rem;
       border-radius: 4px; }

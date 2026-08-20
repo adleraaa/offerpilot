@@ -499,3 +499,265 @@ def test_blind_javascript_disables_the_buttons_while_the_post_is_in_flight():
     assert "finally" in source, (
         "blind.js must re-enable the buttons even when the POST fails")
     assert source.index("disabled = false") > post
+
+
+# --- Readability, labels and hardening -------------------------------------
+#
+# The README's first instruction is to open this panel, so "can a reader see
+# it at all" is a correctness property, not a preference. The stylesheet is
+# read as text and the ratios are computed here rather than eyeballed: a
+# palette that looks fine on the author's own machine is exactly the defect.
+
+STYLE = STATIC / "style.css"
+
+_TOKEN_RE = re.compile(r"(--[\w-]+)\s*:\s*([^;}]+)")
+_HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}\b")
+
+
+def _css() -> str:
+    """The stylesheet with comments removed.
+
+    Everything below asserts on declarations. A comment is prose -- the one
+    at the top of style.css quotes the #1a1a1a that caused this -- and prose
+    that trips a colour audit would push the explanation out of the file.
+    """
+    return re.sub(r"/\*.*?\*/", "", STYLE.read_text(encoding="utf-8"),
+                  flags=re.S)
+
+
+def _srgb_to_linear(channel: int) -> float:
+    c = channel / 255
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _luminance(color: str) -> float:
+    """WCAG 2.1 relative luminance of a `#rgb` or `#rrggbb` colour."""
+    h = color.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    assert len(h) == 6, f"{color} is not an opaque hex colour"
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return (0.2126 * _srgb_to_linear(r) + 0.7152 * _srgb_to_linear(g)
+            + 0.0722 * _srgb_to_linear(b))
+
+
+def _contrast(fg: str, bg: str) -> float:
+    a, b = _luminance(fg), _luminance(bg)
+    lo, hi = min(a, b), max(a, b)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _block_bounds(css: str, start: int) -> tuple[int, int]:
+    """Indices of the `{` at or after `start` and its matching `}`."""
+    i = css.index("{", start)
+    depth, j = 0, i
+    while True:
+        if css[j] == "{":
+            depth += 1
+        elif css[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return i, j
+        j += 1
+
+
+def _balanced_block(css: str, start: int) -> str:
+    """The text inside the `{...}` that opens at or after `start`."""
+    i, j = _block_bounds(css, start)
+    return css[i + 1:j]
+
+
+def _palettes() -> tuple[dict, dict]:
+    """The light palette, and the token overrides the dark block applies.
+
+    Returned separately so a token defined *only* inside the dark media
+    query -- which would be undefined for every light-mode reader -- shows up
+    as a key the light palette does not have.
+    """
+    css = _css()
+    dark_at = css.find("prefers-color-scheme: dark")
+    light, dark_overrides = {}, {}
+    for m in re.finditer(r":root[^{,]*\{", css):
+        block = _balanced_block(css, m.start())
+        tokens = {k: v.strip() for k, v in _TOKEN_RE.findall(block)}
+        if dark_at != -1 and m.start() > dark_at:
+            dark_overrides.update(tokens)
+        else:
+            light.update(tokens)
+    return light, dark_overrides
+
+
+def test_the_stylesheet_defines_a_palette_for_both_themes():
+    """`color-scheme: light dark` is a promise the tokens have to keep.
+
+    Declaring it tells the browser to paint a dark canvas for a reader whose
+    OS is dark. A stylesheet that then defines only light foregrounds -- and
+    leaves `body` with no background at all -- inherits that dark canvas and
+    puts near-black text on it. Either both palettes exist or the declaration
+    is a lie, so this pins the shape: tokens on `:root`, a dark block that
+    overrides tokens and nothing else, and an explicit `body` background.
+    """
+    css = _css()
+    light, dark = _palettes()
+    assert "prefers-color-scheme: dark" in css, (
+        "style.css declares color-scheme: light dark but never defines a "
+        "dark palette")
+    for token in ("--bg", "--fg", "--muted", "--line", "--warn-bg",
+                  "--warn-fg"):
+        assert token in light, f"{token} is not defined for light mode"
+        assert token in dark, f"{token} is not overridden for dark mode"
+    assert not set(dark) - set(light), (
+        f"dark-only tokens are undefined in light mode: "
+        f"{sorted(set(dark) - set(light))}")
+
+    dark_block = _balanced_block(css, css.index("@media (prefers-color-scheme"))
+    stripped = re.sub(r":root[^{]*\{|\}", "", dark_block)
+    for decl in (d.strip() for d in stripped.split(";")):
+        assert not decl or decl.startswith("--"), (
+            f"the dark block must redefine tokens only, not layout: {decl!r}")
+
+    body = _balanced_block(css, css.index("\nbody"))
+    assert re.search(r"background(-color)?\s*:\s*var\(--bg\)", body), (
+        "body must paint its own background from a token; without one it "
+        "inherits the browser's dark canvas while the text stays dark")
+
+
+def test_every_colour_in_the_stylesheet_comes_from_a_token():
+    """A hex literal outside `:root` is a colour only one theme can see.
+
+    `pre` shipped `background: #0000000a`, which is a light-mode assumption
+    hardcoded into a rule the dark block cannot reach. Keeping every literal
+    inside the two `:root` blocks is what makes the contrast test below
+    exhaustive rather than a spot check.
+    """
+    css = _css()
+    root_spans = [_block_bounds(css, m.start())
+                  for m in re.finditer(r":root[^{,]*\{", css)]
+    outside = [m.group(0) for m in _HEX_RE.finditer(css)
+               if not any(lo < m.start() < hi for lo, hi in root_spans)]
+    assert not outside, (
+        f"colour literals outside the palette blocks: {outside}")
+
+
+def test_panel_text_clears_wcag_contrast_in_both_themes():
+    """Measured, not eyeballed. Body text 4.5:1, the warning banner 3:1.
+
+    Before this, a dark-OS reader got `--fg` #1a1a1a on the browser's dark
+    canvas: 1.08:1, which is the queue buttons and the entire posting body
+    rendered invisible on the one page the README tells people to open first.
+    """
+    light, overrides = _palettes()
+    dark = {**light, **overrides}
+    checks = [("--fg", "--bg", 4.5), ("--muted", "--bg", 4.5),
+              ("--link", "--bg", 4.5), ("--fg", "--code-bg", 4.5),
+              ("--muted", "--code-bg", 4.5), ("--warn-fg", "--warn-bg", 3.0)]
+    failures = []
+    for theme, palette in (("light", light), ("dark", dark)):
+        for fg, bg, need in checks:
+            assert fg in palette and bg in palette, (
+                f"the {theme} palette is missing {fg} or {bg}")
+            got = _contrast(palette[fg], palette[bg])
+            if got < need:
+                failures.append(f"{theme}: {fg} on {bg} is {got:.2f}:1, "
+                                f"needs {need}:1")
+    assert not failures, "; ".join(failures)
+
+
+def test_the_fit_select_has_no_default_verdict():
+    """Clicking Reject without touching the dropdown must not say good_fit.
+
+    The options were built straight from the vocabulary, so `good_fit` was
+    option zero and therefore selected by default: every reject with an
+    untouched dropdown wrote `fit_label='good_fit'` next to it. Those rows are
+    auxiliary signal the eval reads, so that is corrupt data, not a cosmetic
+    default. Asserted against the source because the suite has no JS runtime,
+    and paired with the server-side test below that proves null is accepted.
+    """
+    source = (STATIC / "panel.js").read_text(encoding="utf-8")
+    bar = source[source.index("function decisionBar"):
+                 source.index("async function loadItem")]
+    fit_block = bar[bar.index('const fit = el("select")'):
+                    bar.index('const reason = el("select")')]
+    appends = re.findall(r"fit\.appendChild\((.+?)\);", fit_block)
+    assert appends, "the fit select is never populated"
+    assert re.fullmatch(r'new Option\("\([^"]*\)", ""\)', appends[0]), (
+        f"the first option appended to the fit select is {appends[0]!r}; it "
+        f"has to be an empty-valued placeholder, or the browser preselects a "
+        f"real verdict for a reviewer who never opened the dropdown")
+    assert len(appends) > 1, "the fit vocabulary is never offered"
+    assert re.search(r"fit_label:\s*fit\.value\s*\|\|\s*null", bar), (
+        "an untouched select must send null, not the empty string")
+    assert not re.search(r"fit_label:\s*fit\.value\s*[,}]", bar), (
+        "fit.value is sent unguarded; the placeholder's empty value would "
+        "fail the FitLabel vocabulary check as a 422")
+
+
+def test_a_decision_with_no_fit_label_records_a_null_not_a_guess(client,
+                                                                seeded):
+    """The server half of the contract the panel now relies on."""
+    path, vid = seeded
+    r = client.post(f"/api/item/{vid}/decision",
+                    json={"action": "reject", "fit_label": None,
+                          "rejection_reason": "seniority"})
+    assert r.status_code == 200
+    conn = db.connect(path)
+    label = db.get_labels(conn, version_id=vid)[0]
+    assert label["fit_label"] is None
+    assert label["rejection_reason"] == "seniority"
+    conn.close()
+
+
+def test_the_schema_is_brought_up_to_date_once_at_startup(seeded, profile,
+                                                          monkeypatch):
+    """`conn()` ran `migrate` per request: PRAGMA queries on every GET.
+
+    It is idempotent, so nothing broke -- which is why it survived. It still
+    put three PRAGMA round trips and a commit on the read path that belong to
+    startup, and it deferred the failure: a database with no schema 500s on
+    the first request rather than refusing to come up.
+    """
+    path, _ = seeded
+    calls = []
+    real = db.migrate
+
+    def counting(conn):
+        calls.append(1)
+        return real(conn)
+
+    monkeypatch.setattr(db, "migrate", counting)
+    app = create_app(path, profile)
+    assert len(calls) == 1, (
+        f"create_app must migrate exactly once, ran it {len(calls)} times")
+    client = TestClient(app)
+    for _ in range(3):
+        assert client.get("/api/queue").status_code == 200
+    client.get("/api/blind/progress")
+    assert len(calls) == 1, (
+        f"migrate ran {len(calls) - 1} extra time(s) on the request path")
+
+
+def test_the_interactive_api_docs_are_not_served(client):
+    """FastAPI's default docs pull Swagger and ReDoc from a CDN.
+
+    Same origin as the panel, on a local single-user tool with no API
+    consumers to document: a third-party script tag on the page that approves
+    jobs, in exchange for nothing. Turned off at the app, not routed around.
+    """
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404, path
+
+
+def test_a_foreign_host_header_is_refused(client):
+    """Binding loopback does not stop a web page from reaching loopback.
+
+    `serve` refuses a non-loopback bind, which stops the LAN. It does not stop
+    a page in the user's own browser from resolving evil.example.com to
+    127.0.0.1 and POSTing a decision to it -- the request arrives on loopback,
+    from the browser, with no auth to fail. The Host header is the only thing
+    that tells that request apart from the user's own tab.
+    """
+    assert client.get("/api/queue",
+                      headers={"Host": "evil.example.com"}).status_code == 400
+    for good in ("127.0.0.1:8000", "localhost:8000", "localhost"):
+        assert client.get("/api/queue",
+                          headers={"Host": good}).status_code == 200, good

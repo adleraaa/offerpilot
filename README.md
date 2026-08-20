@@ -271,6 +271,28 @@ tests assert on the address actually handed to uvicorn rather than on the
 parameter's default. If you need the panel from another machine, tunnel to
 `127.0.0.1`; do not widen the bind without adding auth first.
 
+Binding loopback is not the whole story, though, because a page already open in
+your browser can reach loopback too: any site can point a hostname it controls
+at `127.0.0.1` and script requests to it, and those arrive on the loopback
+interface, from your own browser, with no auth to fail. The Host header is what
+separates them from your own tab, so the app checks it — `TrustedHostMiddleware`
+allows `127.0.0.1`, `localhost` and whatever host `serve` was told to bind, and
+answers 400 to anything else. FastAPI's interactive docs are off for the same
+reason: `/docs` and `/redoc` are script tags pointing at a CDN, loaded into the
+same origin as the page that approves jobs, and this app's only API consumer is
+the two static pages next to it, so `docs_url`, `redoc_url` and `openapi_url`
+are all `None` and a test asserts `/docs` is a 404.
+
+The two pages carry a light and a dark palette, both of which are checked
+rather than eyed. Every colour in `panel/static/style.css` is a custom property
+defined on `:root`, the `prefers-color-scheme: dark` block redefines those
+tokens and nothing else, and a test parses the stylesheet and computes the WCAG
+contrast of each pair — 4.5:1 for body text, 3:1 for the eligibility banner —
+in both themes. That test exists because the file used to declare
+`color-scheme: light dark`, define only the light half, and leave `body` with no
+background: on a dark-themed OS the browser painted its dark canvas under
+near-black text, 1.08:1, and the queue and the posting body were invisible.
+
 Job text stays untrusted all the way to the screen. The API returns it
 verbatim as JSON, and `panel/static/panel.js` builds every node with
 `textContent`; the markup-injecting DOM properties are banned outright in that
@@ -549,7 +571,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-286 tests, all passing, and CI runs them on every push. They need no network and
+294 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, the panel
 is driven in-process with FastAPI's `TestClient`, and the graph is exercised
