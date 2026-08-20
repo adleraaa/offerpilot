@@ -190,6 +190,25 @@ def run_match_for_version(conn, llm, profile: Profile, version_row,
         _finish_run(conn, run_id, "stale_state")
         return current_status
 
+    # Belt to the client's braces. Handing the validator to
+    # `structured(validate=...)` is what buys the model a repair turn, but
+    # *calling* it is the client's choice: a client that takes **kwargs and
+    # drops `validate` would leave the citation rule with no enforcement path
+    # at all, and an invented source_id would reach `pending_review` in
+    # silence. Re-checking here costs microseconds and makes the gate a
+    # property of this function rather than of whichever client object was
+    # passed in. It sits after the stale-state check on purpose: only there is
+    # the status known to still be 'matching', which is the one state
+    # db.ALLOWED_TRANSITIONS lets us move to 'permanent_error' from.
+    try:
+        validate_evidence(result)
+    except ValueError as e:
+        _log_step(conn, run_id, "gate", attempt, "permanent_error",
+                  error=str(e))
+        db.set_status(conn, vid, "permanent_error")
+        _finish_run(conn, run_id, "permanent_error")
+        return "permanent_error"
+
     score = total_score(result)
     if result.eligibility == "fail":
         final = "eligibility_failed"

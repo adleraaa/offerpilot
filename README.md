@@ -82,9 +82,12 @@ Grounding check: `make_evidence_validator` compares every
 `profile.yaml`. It is handed to the client as `structured(validate=...)`, so an
 id outside that set is rejected and re-asked like a schema violation; a model
 that keeps citing invented ids exhausts the 3 attempts, the version goes to
-`permanent_error`, and nothing reaches the queue. The same validator also
-refuses a result that cites nothing at all once it scores at or above the
-review threshold — an uncited recommendation cannot reach a human. Below the
+`permanent_error`, and nothing reaches the queue. `run_match_for_version` then
+runs that same validator again on whatever the client handed back, before the
+result can reach the review queue: the repair turn depends on the client
+honouring `validate`, the gate does not. The same validator also refuses a
+result that cites nothing at all once it scores at or above the review
+threshold — an uncited recommendation cannot reach a human. Below the
 threshold, and on an eligibility fail, an empty evidence list is allowed: there
 the posting itself is the evidence, and `MatchResult` already demands an
 excerpt from it. That check is in code in `graph.py`. The prompt asks for the

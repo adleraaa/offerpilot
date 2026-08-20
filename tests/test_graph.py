@@ -391,3 +391,37 @@ def test_sweep_stuck_new_isolates_a_row_that_cannot_be_prefiltered(
         "SELECT id, status FROM job_versions")}
     assert statuses[bad] == "new"
     assert statuses[good] in {"ready_for_match", "filtered_out"}
+
+
+@pytest.mark.parametrize("bad", ["invented_id", "uncited_high_score"])
+def test_gate_rejects_bad_evidence_even_if_the_client_drops_validate(
+        conn, profile, bad):
+    """The grounding gate must not depend on the client honouring `validate`.
+
+    Handing the validator to `structured(validate=...)` is what buys the model
+    a repair turn, but calling it is the client's choice. A client that takes
+    `**kwargs` and drops `validate` -- the shape of several doubles in this
+    suite already, and of any future MockLLM or LangGraph re-express -- would
+    otherwise disarm the product's central safety claim in silence, and an
+    invented `source_id` would reach `pending_review`. So the graph re-checks
+    whatever comes back before letting it through the gate.
+    """
+    from tests.conftest import _ready_row
+    from offerpilot.models import MatchResult, EvidenceRef
+
+    class IgnoresValidate:
+        def structured(self, **kwargs):
+            return MatchResult(
+                eligibility="pass", skills_score=30, project_score=20,
+                domain_score=15, seniority_score=15, preference_score=20,
+                evidence=([EvidenceRef(source_id="made_up_project",
+                                       supporting_text="x")]
+                          if bad == "invented_id" else []),
+                confidence=0.9)
+
+    row = _ready_row(conn)
+    status = run_match_for_version(conn, IgnoresValidate(), profile, row,
+                                   threshold=60, max_auto_retries=3)
+    assert status == "permanent_error"
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM review_items").fetchone()["c"] == 0
