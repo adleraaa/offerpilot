@@ -307,8 +307,16 @@ orphan sweep also runs at the start of `collect`, so a crashed run self-heals.
 `panel` serves the review panel and the blind labeling page described above
 and blocks until you stop it; it makes no LLM calls, so it needs no API key.
 `eval` scores the pipeline against the blind labels and writes a timestamped
-JSON result under `evals/results/`; `python run_eval.py` is the same command
-under the name the design spec gives it, and it needs no API key either. What
+JSON result under `evals/results/`; `python run_eval.py` is a shim that hands
+its arguments to that same branch, so the spec's name and this one enforce the
+same guards, and neither needs an API key. Those guards are that `eval` refuses
+a `--db` that does not exist and refuses a missing `profile.yaml`: an eval over
+an empty database reports zero labels and all-None metrics, and one run against
+the synthetic example profile marks every cited evidence id ungrounded, so both
+produce a result file that reads like a finding rather than like a typo. The
+result records the profile it scored against -- path, hash, and the experience
+ids the groundedness check is defined over -- plus the database path, so a
+committed artifact can be checked against its inputs later. What
 it measures is the pipeline's decision rather than the model's: a job the
 prefilter dropped counts as a prediction of "no", so prefilter false negatives
 land in the numbers instead of being invisible by construction, and only

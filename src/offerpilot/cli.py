@@ -10,6 +10,18 @@ from offerpilot.graph import run_match_for_version
 from offerpilot.llm import LLMClient, SpendCapExceeded, AuthLLMError
 
 
+# Two commands refuse the profile.example.yaml fallback. The reasons differ;
+# the failure mode is the same one, which is confident-looking output about a
+# person who does not exist.
+REFUSES_EXAMPLE_PROFILE = {
+    "match": ("refusing to spend LLM budget scoring against the synthetic "
+              "example profile"),
+    "eval": ("refusing to score against the synthetic example profile -- its "
+             "experience ids belong to nobody, so every id cited by a real "
+             "brief would count as ungrounded and the metrics would be junk"),
+}
+
+
 def _company_label(company) -> str:
     """A printable identifier that works even for a malformed config entry."""
     if isinstance(company, dict):
@@ -153,25 +165,35 @@ def main(argv=None):
 
     # Read config first: a missing config must fail before we create a DB.
     cfg = load_config(args.config, strict=(args.command in {"collect", "match"}))
+
+    # Before `db.connect`, which would otherwise create the file this is
+    # checking for. An eval over a database that does not exist reports zero
+    # labels and all-None metrics, which looks like a finding rather than a
+    # typo. `python run_eval.py` routes through here, so this is the one
+    # implementation of that guard and the two entry points cannot drift.
+    if args.command == "eval" and not os.path.exists(args.db):
+        print(f"{args.db} not found. Run `offerpilot collect` and label some "
+              f"jobs in the panel first.")
+        raise SystemExit(1)
+
+    if (args.command in REFUSES_EXAMPLE_PROFILE
+            and not os.path.exists(args.profile)):
+        print(f"{args.profile} not found - "
+              f"{REFUSES_EXAMPLE_PROFILE[args.command]}. Create "
+              f"{args.profile} (copy profile.example.yaml) first.")
+        raise SystemExit(1)
+
     os.makedirs(os.path.dirname(args.db) or ".", exist_ok=True)
     conn = db.connect(args.db)
     db.init_schema(conn)
 
-    if args.command == "match":
-        if not os.path.exists(args.profile):
-            print("profile.yaml not found - refusing to spend LLM budget "
-                  "scoring against the synthetic example profile. Create "
-                  "profile.yaml (copy profile.example.yaml) first.")
-            raise SystemExit(1)
-        profile = load_profile(args.profile)
+    if os.path.exists(args.profile):
+        profile_path = args.profile
     else:
-        if os.path.exists(args.profile):
-            profile_path = args.profile
-        else:
-            profile_path = "profile.example.yaml"
-            print("[warn] profile.yaml not found; using profile.example.yaml "
-                  "for prefiltering.")
-        profile = load_profile(profile_path)
+        profile_path = "profile.example.yaml"
+        print(f"[warn] {args.profile} not found; using "
+              f"{profile_path} instead.")
+    profile = load_profile(profile_path)
 
     if args.command == "collect":
         # A run that crashed between upsert_job and the prefilter left rows
@@ -201,8 +223,10 @@ def main(argv=None):
         from offerpilot.evaluate import run_eval as _run_eval
         eval_cfg = cfg.get("eval") or {}
         # Same rendering as `python run_eval.py`, which is the same call.
+        # `profile_path` goes into the committed result file: which profile
+        # the groundedness counts were computed against decides what they mean.
         print(json.dumps(
-            _run_eval(conn, profile,
+            _run_eval(conn, profile, profile_path=profile_path,
                       results_dir=eval_cfg.get("results_dir", "evals/results"),
                       precision_at=eval_cfg.get("precision_at", [5, 10])),
             indent=2))

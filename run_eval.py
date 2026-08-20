@@ -7,7 +7,6 @@ database.
 """
 
 import argparse
-import os
 import sys
 
 
@@ -22,12 +21,10 @@ def main(argv=None):
     p.add_argument("--profile", default="profile.yaml")
     args = p.parse_args(argv)
 
-    # An eval over a database that does not exist reports zero labels and
-    # all-None metrics, which looks like a finding rather than a typo.
-    if not os.path.exists(args.db):
-        raise SystemExit(f"{args.db} not found. Run `offerpilot collect` and "
-                         f"label some jobs in the panel first.")
-
+    # Every guard -- missing database, missing profile.yaml -- lives in the
+    # eval branch of `offerpilot.cli`, so this shim cannot be the lenient way
+    # in. Adding a check here would be a second implementation to keep in
+    # sync, which is the drift this file exists to avoid.
     from offerpilot.cli import main as cli_main
     cli_main(["eval", "--db", args.db, "--config", args.config,
               "--profile", args.profile])

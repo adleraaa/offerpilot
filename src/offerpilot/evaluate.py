@@ -17,6 +17,7 @@ the 82; scoring against it measures the system's agreement with itself. Those
 rows are kept as auxiliary signal and excluded here.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -147,8 +148,42 @@ def groundedness_flags(brief: dict, profile, job_text: str) -> dict:
                            + len(unsupported_proper_nouns))}
 
 
+def profile_fingerprint(profile, path: str | None = None) -> dict:
+    """Which profile these numbers were computed against.
+
+    Every groundedness count is defined relative to one profile's experience
+    ids. Score a real run's briefs against `profile.example.yaml` and each
+    cited id is "unknown", so the harness reports a wall of ungrounded briefs
+    -- output that is indistinguishable from a genuine finding once the
+    warning on stdout has scrolled away. The result file is committed as
+    evidence, so it has to carry enough to tell those two runs apart after the
+    fact: the path asked for, a hash that changes when the profile does, and
+    the id vocabulary itself, which is the part the numbers depend on.
+    """
+    payload = json.dumps(profile.model_dump(mode="json"), sort_keys=True,
+                         ensure_ascii=False)
+    return {"path": path,
+            "sha256_16": hashlib.sha256(payload.encode()).hexdigest()[:16],
+            "experience_ids": sorted(profile.experience_ids())}
+
+
+def _db_path(conn) -> str:
+    """The file this connection is actually reading, asked of SQLite itself.
+
+    Taken from the connection rather than from a caller-supplied string so it
+    cannot disagree with the database the metrics came from.
+    """
+    try:
+        for row in conn.execute("PRAGMA database_list"):
+            if row["name"] == "main":
+                return row["file"] or ":memory:"
+    except Exception:
+        pass
+    return "unknown"
+
+
 def run_eval(conn, profile, *, results_dir: str = "evals/results",
-             precision_at=(5, 10)) -> dict:
+             precision_at=(5, 10), profile_path: str | None = None) -> dict:
     blind = {}
     for row in db.get_labels(conn, label_source="blind_eval"):
         # The blind view refuses a second label per version, so this is one
@@ -208,6 +243,8 @@ def run_eval(conn, profile, *, results_dir: str = "evals/results",
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": git_commit(),
+        "profile": profile_fingerprint(profile, profile_path),
+        "database": _db_path(conn),
         "labels": {"blind_labeled": len(blind), "uncertain_excluded": uncertain,
                    "undecided_excluded": undecided, "scored": len(pairs)},
         "classification": classification_metrics(pairs),

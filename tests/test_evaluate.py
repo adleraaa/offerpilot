@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 import yaml
@@ -6,7 +7,7 @@ import yaml
 from offerpilot import cli
 from offerpilot.evaluate import (
     classification_metrics, groundedness_flags, precision_at_k,
-    predicted_positive, run_eval,
+    predicted_positive, profile_fingerprint, run_eval,
 )
 from offerpilot.store import db
 
@@ -219,14 +220,95 @@ def test_evaluate_reuses_the_single_git_commit_helper():
     assert evaluate.git_commit is config.git_commit
 
 
-def test_cli_eval_command_writes_a_result(tmp_path):
+def test_cli_eval_command_writes_a_result_naming_its_inputs(tmp_path):
     results = tmp_path / "results"
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump(
         {"match": {"score_threshold": 60, "max_auto_retries": 3},
          "eval": {"results_dir": str(results), "precision_at": [5]}}),
         encoding="utf-8")
-    cli.main(["eval", "--db", str(tmp_path / "e.db"),
-              "--config", str(cfg_path),
+    # The database has to exist: `eval` refuses to create one, because an
+    # eval over an empty database reports nothing and looks like a finding.
+    db_path = tmp_path / "e.db"
+    db.init_schema(db.connect(str(db_path)))
+    cli.main(["eval", "--db", str(db_path), "--config", str(cfg_path),
               "--profile", "profile.example.yaml"])
-    assert len(list(results.glob("eval-*.json"))) == 1
+    files = list(results.glob("eval-*.json"))
+    assert len(files) == 1
+    saved = json.loads(files[0].read_text(encoding="utf-8"))
+    # Explicitly asking for the example profile is allowed; the result says so.
+    assert saved["profile"]["path"] == "profile.example.yaml"
+    assert os.path.samefile(saved["database"], db_path)
+
+
+def test_run_eval_records_the_profile_it_scored_against(conn, tmp_path,
+                                                        profile):
+    """The artifact is committed as evidence, so it must name its inputs.
+
+    Run against the wrong profile, every cited id in every brief counts as
+    unknown and the groundedness numbers are garbage that looks exactly like
+    a finding. Without provenance in the file, the two are indistinguishable
+    once the warning has scrolled off the terminal.
+    """
+    results = tmp_path / "r"
+    out = run_eval(conn, profile, results_dir=str(results), precision_at=[5],
+                   profile_path="profile.yaml")
+    saved = json.loads(next(results.glob("eval-*.json")).read_text("utf-8"))
+    assert saved["profile"] == out["profile"]
+    assert saved["profile"]["path"] == "profile.yaml"
+    assert saved["profile"]["experience_ids"] == ["pathpilot"]
+    assert len(saved["profile"]["sha256_16"]) == 16
+
+
+def test_profile_fingerprint_tells_the_example_profile_apart(profile):
+    from offerpilot.profile import load_profile
+    example = profile_fingerprint(load_profile("profile.example.yaml"))
+    assert example["sha256_16"] != profile_fingerprint(profile)["sha256_16"]
+    assert example["experience_ids"] == ["sample_automation", "sample_project"]
+
+
+def test_run_eval_records_the_database_it_read(conn, tmp_path, profile):
+    out = run_eval(conn, profile, results_dir=str(tmp_path / "r"),
+                   precision_at=[5])
+    assert os.path.samefile(out["database"], tmp_path / "t.db")
+
+
+def test_cli_eval_refuses_a_database_that_does_not_exist(tmp_path):
+    """Zero labels and all-None metrics look like a finding, not a typo."""
+    results = tmp_path / "results"
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump(
+        {"match": {"score_threshold": 60, "max_auto_retries": 3},
+         "eval": {"results_dir": str(results), "precision_at": [5]}}),
+        encoding="utf-8")
+    missing = tmp_path / "nope" / "absent.db"
+    with pytest.raises(SystemExit):
+        cli.main(["eval", "--db", str(missing), "--config", str(cfg_path),
+                  "--profile", "profile.example.yaml"])
+    assert not missing.exists()          # and it did not create one either
+    assert not results.exists()
+
+
+def test_run_eval_shim_and_cli_eval_guard_the_database_identically(tmp_path):
+    """README calls these the same command; the guard has to agree."""
+    import run_eval as shim
+    with pytest.raises(SystemExit):
+        shim.main(["--db", str(tmp_path / "absent.db"),
+                   "--config", "config.example.yaml",
+                   "--profile", "profile.example.yaml"])
+
+
+def test_cli_eval_refuses_the_synthetic_example_profile_fallback(tmp_path):
+    """Silently scoring against profile.example.yaml produces junk metrics."""
+    results = tmp_path / "results"
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump(
+        {"match": {"score_threshold": 60, "max_auto_retries": 3},
+         "eval": {"results_dir": str(results), "precision_at": [5]}}),
+        encoding="utf-8")
+    db_path = tmp_path / "e.db"
+    db.init_schema(db.connect(str(db_path)))
+    with pytest.raises(SystemExit):
+        cli.main(["eval", "--db", str(db_path), "--config", str(cfg_path),
+                  "--profile", str(tmp_path / "no-such-profile.yaml")])
+    assert not results.exists()
