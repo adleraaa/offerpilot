@@ -329,3 +329,97 @@ def test_panel_cli_refuses_a_non_loopback_configured_host(tmp_path, monkeypatch)
                   "--config", str(cfg),
                   "--profile", "profile.example.yaml"])
     assert e.value.code == 1
+
+
+# --- Blind labeling view ---------------------------------------------------
+#
+# The blind view exists so the eval's ground truth is produced without seeing
+# what the model said. That makes "the payload carries no model output" the
+# whole feature, not a detail, so the leak test below greps the serialized
+# response rather than naming fields.
+
+
+def test_blind_next_hides_every_model_output(client, seeded):
+    _, vid = seeded
+    body = client.get("/api/blind/next").json()
+    assert body["job"]["job_version_id"] == vid
+    flat = json.dumps(body)
+    for leaked in ("total_score", "skills_score", "eligibility", "evidence",
+                   "match", "brief", "confidence", "status"):
+        assert leaked not in flat, f"blind view leaked {leaked}"
+    assert body["profile_summary"]["identity"]["name"]
+    assert body["job"]["description_text"]
+
+
+def test_blind_label_is_recorded_with_blind_eval_provenance(client, seeded):
+    path, vid = seeded
+    r = client.post(f"/api/blind/{vid}/label", json={"fit_label": "good_fit"})
+    assert r.status_code == 200
+    conn = db.connect(path)
+    labels = db.get_labels(conn, version_id=vid)
+    assert [l["label_source"] for l in labels] == ["blind_eval"]
+    conn.close()
+
+
+def test_blind_label_does_not_change_job_status(client, seeded):
+    path, vid = seeded
+    client.post(f"/api/blind/{vid}/label", json={"fit_label": "poor_fit"})
+    conn = db.connect(path)
+    assert conn.execute("SELECT status FROM job_versions WHERE id=?",
+                        (vid,)).fetchone()["status"] == "pending_review"
+    conn.close()
+
+
+def test_blind_next_skips_already_labeled_and_reports_exhaustion(client,
+                                                                seeded):
+    _, vid = seeded
+    client.post(f"/api/blind/{vid}/label", json={"fit_label": "uncertain"})
+    body = client.get("/api/blind/next").json()
+    assert body["job"] is None
+    assert body["remaining"] == 0
+
+
+def test_blind_label_requires_a_fit_label(client, seeded):
+    _, vid = seeded
+    assert client.post(f"/api/blind/{vid}/label", json={}).status_code == 422
+
+
+def test_blind_label_on_an_unknown_version_is_404(client):
+    r = client.post("/api/blind/9999/label", json={"fit_label": "good_fit"})
+    assert r.status_code == 404
+
+
+def test_blind_progress_counts_labeled_versus_total(client, seeded):
+    _, vid = seeded
+    before = client.get("/api/blind/progress").json()
+    assert before["labeled"] == 0 and before["total"] >= 1
+    client.post(f"/api/blind/{vid}/label", json={"fit_label": "good_fit"})
+    assert client.get("/api/blind/progress").json()["labeled"] == 1
+
+
+def test_blind_offers_versions_the_prefilter_dropped(tmp_path, profile):
+    """`filtered_out` jobs are candidates, or the eval cannot see its own FNs.
+
+    The prefilter's false negatives are only measurable if a human can label a
+    job the prefilter threw away, so the blind queue must not be the review
+    queue -- it is every job version, review item or not.
+    """
+    path = str(tmp_path / "f.db")
+    conn = db.connect(path)
+    db.init_schema(conn)
+    from tests.conftest import _make_job
+    _, dropped = db.upsert_job(conn, _make_job("77"))
+    db.set_status(conn, dropped, "filtered_out")
+    conn.close()
+    c = TestClient(create_app(path, profile))
+    body = c.get("/api/blind/next").json()
+    assert body["job"]["job_version_id"] == dropped
+    assert body["remaining"] == 1
+    assert c.get("/api/blind/progress").json()["total"] == 1
+
+
+def test_blind_page_and_its_script_are_served(client):
+    page = client.get("/blind")
+    assert page.status_code == 200
+    assert "Blind labeling" in page.text
+    assert client.get("/static/blind.js").status_code == 200

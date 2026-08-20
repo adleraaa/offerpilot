@@ -12,6 +12,12 @@ escaping happens exactly once, in the browser, where `panel.js` writes it with
 `textContent`. Escaping here as well would double-escape; escaping here
 *instead* would leave the DOM path to guess. `tests/test_panel.py` pins both
 halves of that contract.
+
+Two pages, two label sources, and the difference between them is the point.
+`/` shows the model's work and writes `review_feedback`. `/blind` shows the
+posting and the profile and nothing the model produced, and writes
+`blind_eval` -- the only labels the eval harness reads, because ground truth
+that has already seen the prediction is not ground truth.
 """
 
 import ipaddress
@@ -48,6 +54,13 @@ class BriefEdit(BaseModel):
     brief: ApplicationBrief
 
 
+class BlindLabel(BaseModel):
+    fit_label: FitLabel
+    action_label: Optional[ActionLabel] = None
+    rejection_reason: Optional[RejectionReason] = None
+    notes: Optional[str] = None
+
+
 def _row_to_queue_item(row: sqlite3.Row) -> dict:
     return {"job_version_id": row["job_version_id"],
             "title": row["title"], "company_id": row["company_id"],
@@ -72,9 +85,9 @@ def create_app(db_path: str, profile) -> FastAPI:
     def blind_page():
         page = STATIC_DIR / "blind.html"
         if not page.exists():
-            # index.html links here; the blind labeling view is a later
-            # milestone. An honest 404 beats FileResponse raising at send time.
-            raise HTTPException(404, "blind labeling view is not built yet")
+            # Ships next to this module as package data; if a partial install
+            # dropped it, an honest 404 beats FileResponse raising at send.
+            raise HTTPException(404, "blind labeling page is missing")
         return FileResponse(page)
 
     @app.get("/api/queue")
@@ -148,6 +161,88 @@ def create_app(db_path: str, profile) -> FastAPI:
                 "WHERE r.job_version_id=? ORDER BY rs.id",
                 (version_id,)).fetchall()
         return {"steps": [dict(r) for r in rows]}
+
+    def _profile_summary() -> dict:
+        """The half of the profile a human needs to judge a job themselves.
+
+        Deliberately assembled field by field rather than dumped: the blind
+        page must carry no model output, and `profile.model_dump()` would
+        widen automatically the next time a field is added to `Profile`.
+        """
+        return {"identity": profile.identity.model_dump(),
+                "constraints": profile.constraints.model_dump(),
+                "skills": profile.skills.model_dump(),
+                "experiences": [{"id": e.id, "title": e.title,
+                                 "summary": e.summary}
+                                for e in profile.experiences]}
+
+    @app.get("/api/blind/next")
+    def api_blind_next():
+        """One unlabeled job version: posting and profile, nothing else.
+
+        No score, no subscores, no eligibility, no evidence, no brief and no
+        status -- a label written after seeing any of those is not independent
+        of the model, and the eval's ground truth would be measuring itself.
+        Candidates come from `db.get_blind_candidates`, which spans *every*
+        job version including `filtered_out` ones, because the eval has to be
+        able to count the jobs the prefilter dropped by mistake.
+        """
+        with conn() as c:
+            rows = db.get_blind_candidates(c, limit=1, unlabeled_only=True)
+            # Same FROM and same predicate as get_blind_candidates, so
+            # `remaining == 0` and "no rows" can never disagree.
+            remaining = c.execute(
+                "SELECT COUNT(*) n FROM job_versions jv "
+                "JOIN jobs j ON j.id = jv.job_id "
+                "WHERE NOT EXISTS (SELECT 1 FROM labels l "
+                "WHERE l.job_version_id = jv.id "
+                "AND l.label_source='blind_eval')").fetchone()["n"]
+        summary = _profile_summary()
+        if not rows:
+            return {"job": None, "remaining": remaining,
+                    "profile_summary": summary}
+        r = rows[0]
+        return {
+            "job": {"job_version_id": r["id"], "title": r["title"],
+                    "company_id": r["company_id"], "location": r["location"],
+                    "description_text": r["description_text"],
+                    "url": r["canonical_url"]},
+            "remaining": remaining,
+            "profile_summary": summary,
+        }
+
+    @app.post("/api/blind/{version_id}/label")
+    def api_blind_label(version_id: int, label: BlindLabel):
+        """Write the human's own verdict, and touch nothing else.
+
+        No status transition: a blind label is an opinion about the job, not a
+        decision about the application, and moving the row would both corrupt
+        the review queue and let the label change what the pipeline does.
+        """
+        with conn() as c:
+            exists = c.execute("SELECT 1 FROM job_versions WHERE id=?",
+                               (version_id,)).fetchone()
+            if exists is None:
+                raise HTTPException(404, "unknown job version")
+            db.record_label(c, version_id, label_source="blind_eval",
+                            fit_label=label.fit_label,
+                            action_label=label.action_label,
+                            rejection_reason=label.rejection_reason,
+                            notes=label.notes)
+        return {"ok": True}
+
+    @app.get("/api/blind/progress")
+    def api_blind_progress():
+        with conn() as c:
+            total = c.execute(
+                "SELECT COUNT(*) n FROM job_versions").fetchone()["n"]
+            labeled = c.execute(
+                "SELECT COUNT(DISTINCT job_version_id) n FROM labels "
+                "WHERE label_source='blind_eval'").fetchone()["n"]
+        # The spec asks for 40-60 blind labels before the eval numbers mean
+        # anything; the page shows the target so the count is not just a tally.
+        return {"labeled": labeled, "total": total,
+                "target_min": 40, "target_max": 60}
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     return app

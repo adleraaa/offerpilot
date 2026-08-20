@@ -218,6 +218,31 @@ same treatment, because it arrives inside the ATS payload and
 link only for `http`/`https` and falls back to plain text otherwise, so a
 `javascript:` URL has nothing to run in.
 
+## Blind labeling
+
+`/blind`, served by the same process, is the review panel with the model
+subtracted. It shows one job posting and a summary of your own profile, and
+that is all it is sent: `GET /api/blind/next` carries no score, no subscores,
+no eligibility verdict, no evidence, no brief and not even the job's status.
+A test serializes the whole response and greps it for those words, because the
+guarantee is about the payload, not about what the page chooses to draw.
+
+The reason is that these labels are the eval's ground truth. A label written
+after seeing an 82/100 is partly a label about the 82, and an eval scored
+against it measures agreement with itself. So the blind page writes
+`label_source='blind_eval'`, the review panel writes
+`label_source='review_feedback'`, and `evaluate.py` will read only the first
+kind. A blind label writes a row in `labels` and moves nothing: the job's
+status is the pipeline's business, and labelling must not be able to change
+what the pipeline does.
+
+Candidates come from `db.get_blind_candidates`, which spans every job version
+in the database — including the ones the prefilter threw out at `filtered_out`
+and the ones that never reached a human. That is deliberate: if the blind
+queue were the review queue, the prefilter's false negatives would be
+invisible to the eval by construction. The header shows progress against the
+40–60 labels the design spec asks for before the numbers mean anything.
+
 ## Why the pipeline is fixed
 
 A job posting is text written by a stranger, fetched over the network, and put
@@ -269,8 +294,8 @@ over 15 minutes back to `ready_for_match`, re-prefilters versions orphaned at
 `new` by a crash between the insert and the prefilter, and resets
 `permanent_error` rows to `ready_for_match` with a zeroed attempt count. That
 orphan sweep also runs at the start of `collect`, so a crashed run self-heals.
-`panel` serves the review panel described above and blocks until you stop it;
-it makes no LLM calls, so it needs no API key.
+`panel` serves the review panel and the blind labeling page described above
+and blocks until you stop it; it makes no LLM calls, so it needs no API key.
 
 Every subcommand takes `--db` (default `data/offerpilot.db`), `--config`
 (default `config.yaml`), `--profile` (default `profile.yaml`) and `--limit`
@@ -286,7 +311,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-199 tests, all passing, and CI runs them on every push. They need no network and
+215 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, and the
 panel is driven in-process with FastAPI's `TestClient`.
@@ -303,12 +328,11 @@ requiring a rebuild. `labels`, `review_items.edited_brief_json` and
 
 - No retrieval. No embeddings, no vector store, no Chroma or
   sentence-transformers. Evidence is the structured profile and nothing else.
-- No blind labeling view. `db.get_blind_candidates` and the `blind_eval` label
-  source exist, and the panel's nav links to `/blind`, but that page is not
-  built: the link answers 404 today.
-- No eval runner. The small blind-labeled evaluation set described in the design
-  spec has not been assembled or run, so there are no fit, ranking or
-  groundedness numbers.
+- No eval runner. The blind labeling page is built and writes `blind_eval`
+  labels, but nothing reads them yet: the evaluation set has not been
+  assembled or scored, so there are no fit, ranking or groundedness numbers.
+  The 40–60 target the blind page displays is a target, not a count that has
+  been reached.
 - No demo mode. `match` needs a real key; `collect`, `status`, `retry` and
   `panel` do not.
 - No Ashby collector and no Playwright careers-page collector. Greenhouse and
