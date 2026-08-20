@@ -215,3 +215,20 @@ def test_readme_does_not_vouch_for_a_stale_spec_banner():
     assert any(w.lower() in docs for w in _STALENESS_WORDS), (
         f"the spec banner still lists {stale} as not built, but the README's "
         "Docs section does not say the banner is out of date")
+
+
+def test_readme_test_count_matches_the_suite(request):
+    """The README states a test count; nothing stopped it going stale.
+
+    It said 280 while the suite was at 285. A number in a portfolio README is
+    a claim like any other, so it is pinned here rather than trusted.
+    Self-skips on a partial run, where the collected count is meaningless.
+    """
+    collected = request.session.testscollected
+    if collected < 200:
+        pytest.skip(f"partial run ({collected} collected); count is meaningless")
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    claimed = re.findall(r"(\d+) tests, all passing", text)
+    assert claimed, "README no longer states a test count"
+    assert int(claimed[0]) == collected, (
+        f"README claims {claimed[0]} tests, suite has {collected}")

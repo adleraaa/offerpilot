@@ -392,8 +392,48 @@ Every subcommand takes `--db` (default `data/offerpilot.db`), `--config`
 (process at most N jobs, on `collect` and `match`). `demo` is the exception: it
 reads no config, no profile and no `--db`, because it brings its own.
 
-No end-to-end run against a real API key has happened yet — see **What is not
-built**.
+### Smoke run, 2026-08-20
+
+The pipeline has been run end to end against the live Greenhouse API and the
+live DeepSeek API once, on a throwaway copy of the database. Numbers below are
+measured, not estimated.
+
+**Collect.** 213 postings from two Greenhouse boards in 4.4s, no errors. The
+deterministic prefilter dropped 52 of them before any model call — 32 on
+years-of-experience, 16 on location, 9 on work authorization. `pay_floor`
+parsed nine hourly ranges (`$40 to $55/hr`, `$60-80/hr`, …) and passed all of
+them, correctly: none fell below the configured floor. `graduation_window`
+returned `unknown` on all 213, also correctly — no posting in this corpus
+states a class-year window, so there was nothing to decide on.
+
+**Match and brief.** 5 jobs scored, 6 model calls (5 match, 1 brief).
+
+| | |
+|---|---|
+| Model served | `deepseek-v4-flash` |
+| Prompt tokens | 14,043 |
+| Completion tokens | 15,950 |
+| Cost | $0.0130 total, ~$0.0026 per job |
+| Schema repair turns | 0 — every call validated on the first attempt |
+| Invented `source_id`s | 0 — the grounding check never had to fire |
+| Outcomes | 4 `eligibility_failed`, 1 `pending_review` with a brief |
+
+Two things worth knowing before running a full batch:
+
+- **Completion tokens exceed prompt tokens** (15,950 vs 14,043). This model
+  emits reasoning, and it is billed as output at 3× the cache-miss input rate,
+  so cost is driven by the reply rather than by the posting. Estimating from
+  prompt size alone understates it by roughly an order of magnitude.
+- **A full batch will hit the spend cap.** At $0.0026 per job, the 161 jobs
+  left at `ready_for_match` cost about $0.42, while `config.example.yaml` caps
+  the day at $2.00 and the author's local cap was $0.10 — which would have
+  stopped the run around job 38. That is the fuse doing its job, but set the
+  cap deliberately rather than discovering it mid-run.
+
+The four `eligibility_failed` verdicts were correct: two Tier-1 consulting
+roles asking for years of post-graduation experience, one role in Doha, and one
+outside the profile's constraints. Each cited the posting excerpt that decided
+it, as the schema requires.
 
 ## Evaluation
 
@@ -455,9 +495,9 @@ yet:** no blind labels have been collected, so `evals/results/` is empty.
 - No recorded *real* model outputs. `demo` exists and needs no key, but the
   outputs it replays from `demo/recorded_outputs.json` were written by hand to
   exercise each terminal state, not captured from a live model.
-- Neither LLM node has ever been run against a real API key. Every test of the
-  match and brief nodes uses a stub, so neither prompt has been checked against
-  real model output and the cost of a real run is unmeasured. One standalone
+- No sustained real-model run. Both LLM nodes have now been exercised against
+  the live API once (see **Smoke run, 2026-08-20**), but on 5 jobs, so prompt
+  behaviour across a full batch and across job types is still largely unproven. One standalone
   probe on 2026-08-20 did call the API to read back a real `usage` object —
   that is where the pricing above comes from — but it did not go through this
   code and scored nothing. Only `match` needs a real key; `collect`, `status`,
@@ -506,7 +546,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-280 tests, all passing, and CI runs them on every push. They need no network and
+286 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, the panel
 is driven in-process with FastAPI's `TestClient`, and the graph is exercised
