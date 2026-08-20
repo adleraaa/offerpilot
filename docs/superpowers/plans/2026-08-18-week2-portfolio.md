@@ -2592,6 +2592,303 @@ git commit -m "feat: compile match/gate/brief/persist into a LangGraph StateGrap
 
 ---
 
+### Task D: Spend-ledger pricing correctness (from the 2026-08-20 live API probe)
+
+**Files:**
+- Modify: `src/offerpilot/llm.py`, `config.example.yaml`, `README.md`
+- Test: `tests/test_llm.py`
+
+**Why:** the first-ever real call to the DeepSeek API (a standalone probe, not
+through this code) showed the spend ledger is wrong on four separate axes. The
+spec makes the ledger a hard boundary — "Spending fuse: a configurable daily
+LLM-spend cap" (§Hard boundaries 4) and "per-call rows (model, prompt/completion
+tokens, estimated cost...); prices in config" (§Security) — so a ledger that
+misprices by an order of magnitude is a correctness defect, not a polish item.
+
+Probe evidence (2026-08-20, 190 prompt + 47 completion tokens):
+
+1. **The served model is not the requested model.** The request set
+   `model="deepseek-chat"`; the response came back with
+   `resp.model == "deepseek-v4-flash"`. `deepseek-chat` is a legacy alias.
+   `_record` keys prices by `self.cfg["model"]` — the *requested* name — and
+   writes that same name into `llm_usage.model`. So the ledger prices the wrong
+   model and records a model name that was never actually served, which also
+   breaks the reproducibility story `runs`/`run_steps` are meant to carry.
+2. **The configured prices are not v4-flash's prices.** `config.example.yaml`
+   says `input_per_mtok_usd: 0.27`, `output_per_mtok_usd: 1.10`. Official rates
+   (https://api-docs.deepseek.com/quick_start/pricing/) for `deepseek-v4-flash`
+   are $0.22 in / $0.66 out off-peak and $0.44 in / $1.32 out peak.
+3. **Peak/off-peak is not modelled at all.** Peak hours are 01:00–04:00 and
+   06:00–10:00 UTC; off-peak is exactly half. A single flat rate is wrong for
+   roughly a third of the day and wrong in the other direction the rest of it.
+4. **Prompt caching is ignored, and it dominates this workload.** The probe's
+   `usage` object carries `prompt_cache_hit_tokens` and
+   `prompt_cache_miss_tokens`. Cache-hit input is priced ~31× below cache-miss
+   ($0.007 vs $0.22 off-peak). OfferPilot resends an identical system prompt
+   plus the full profile on *every* job in a batch, so after the first call
+   almost all prompt tokens are cache hits. Charging them at the miss rate
+   overstates batch cost by a large factor, which in turn makes
+   `daily_spend_cap_usd` fire far too early.
+
+**Interfaces:**
+- Produces in `offerpilot/llm.py`:
+  - `is_peak_hour(when: datetime | None = None) -> bool` — UTC 01:00–04:00 or 06:00–10:00.
+  - `price_usage(usage, model: str, prices: dict, *, when=None) -> float` — the single costing function, used by both `_record` and `_estimate_cost`.
+- `LLMClient._record` now takes the served model name and writes it to `llm_usage.model`.
+
+> **Do not** change the daily cap's UTC day boundary (`date('now')`). That is a
+> separate, deliberate decision recorded in the plan's audit table.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_llm.py`:
+
+```python
+from datetime import datetime, timezone
+
+from offerpilot.llm import is_peak_hour, price_usage
+
+
+class _Usage:
+    def __init__(self, hit=0, miss=0, completion=0):
+        self.prompt_cache_hit_tokens = hit
+        self.prompt_cache_miss_tokens = miss
+        self.prompt_tokens = hit + miss
+        self.completion_tokens = completion
+
+
+V4_PRICES = {
+    "deepseek-v4-flash": {
+        "input_cache_hit_per_mtok_usd": 0.007,
+        "input_cache_miss_per_mtok_usd": 0.22,
+        "output_per_mtok_usd": 0.66,
+        "peak_multiplier": 2.0,
+    }
+}
+
+
+def test_peak_hours_match_the_published_windows():
+    def at(hour):
+        return datetime(2026, 8, 20, hour, 30, tzinfo=timezone.utc)
+    for hour in (1, 2, 3, 6, 7, 8, 9):
+        assert is_peak_hour(at(hour)) is True, hour
+    for hour in (0, 4, 5, 10, 11, 17, 23):
+        assert is_peak_hour(at(hour)) is False, hour
+
+
+def test_cache_hits_are_priced_far_below_cache_misses():
+    off = datetime(2026, 8, 20, 17, 0, tzinfo=timezone.utc)
+    all_hit = price_usage(_Usage(hit=1_000_000), "deepseek-v4-flash",
+                          V4_PRICES, when=off)
+    all_miss = price_usage(_Usage(miss=1_000_000), "deepseek-v4-flash",
+                           V4_PRICES, when=off)
+    assert all_hit == pytest.approx(0.007)
+    assert all_miss == pytest.approx(0.22)
+    assert all_miss > all_hit * 20
+
+
+def test_peak_pricing_is_double_off_peak():
+    usage = _Usage(miss=1_000_000, completion=1_000_000)
+    off = price_usage(usage, "deepseek-v4-flash", V4_PRICES,
+                      when=datetime(2026, 8, 20, 17, 0, tzinfo=timezone.utc))
+    peak = price_usage(usage, "deepseek-v4-flash", V4_PRICES,
+                       when=datetime(2026, 8, 20, 2, 0, tzinfo=timezone.utc))
+    assert off == pytest.approx(0.22 + 0.66)
+    assert peak == pytest.approx(off * 2)
+
+
+def test_usage_without_cache_fields_falls_back_to_all_miss():
+    """Other OpenAI-compatible endpoints do not report a cache split."""
+    class Bare:
+        prompt_tokens = 1_000_000
+        completion_tokens = 0
+
+    off = datetime(2026, 8, 20, 17, 0, tzinfo=timezone.utc)
+    assert price_usage(Bare(), "deepseek-v4-flash", V4_PRICES,
+                       when=off) == pytest.approx(0.22)
+
+
+def test_ledger_records_the_served_model_not_the_requested_alias(conn):
+    """deepseek-chat is an alias; the ledger must record what was served."""
+    served = _Resp(_ok_match())
+    served.model = "deepseek-v4-flash"
+
+    class AliasClient:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": self})()
+
+        def create(self, **kw):
+            assert kw["model"] == "deepseek-chat"
+            return served
+
+    cfg = {"base_url": "x", "model": "deepseek-chat",
+           "daily_spend_cap_usd": 5.0, "prices": V4_PRICES}
+    llm = LLMClient(conn, cfg, "k", client=AliasClient())
+    llm.structured(node="match", run_id=None, system="s", user="u",
+                   schema=MatchResult)
+    row = conn.execute("SELECT model FROM llm_usage").fetchone()
+    assert row["model"] == "deepseek-v4-flash"
+
+
+def test_unknown_served_model_falls_back_to_the_configured_prices(conn):
+    """An unpriced model must not crash the batch with a KeyError."""
+    served = _Resp(_ok_match())
+    served.model = "deepseek-v9-unreleased"
+
+    class OddClient:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": self})()
+
+        def create(self, **kw):
+            return served
+
+    cfg = {"base_url": "x", "model": "deepseek-v4-flash",
+           "daily_spend_cap_usd": 5.0, "prices": V4_PRICES}
+    llm = LLMClient(conn, cfg, "k", client=OddClient())
+    llm.structured(node="match", run_id=None, system="s", user="u",
+                   schema=MatchResult)
+    row = conn.execute("SELECT model, estimated_cost_usd FROM "
+                       "llm_usage").fetchone()
+    assert row["model"] == "deepseek-v9-unreleased"
+    assert row["estimated_cost_usd"] > 0
+```
+
+`_Resp` and `_ok_match` already exist in `tests/test_llm.py` from Task 3; if
+`_Resp` has no `model` attribute, add one defaulting to `"deepseek-v4-flash"`.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `python -m pytest tests/test_llm.py -q`
+Expected: FAIL — `ImportError: cannot import name 'is_peak_hour'`
+
+- [ ] **Step 3: Add the pricing functions to `src/offerpilot/llm.py`**
+
+```python
+from datetime import datetime, timezone
+
+_PEAK_HOURS_UTC = frozenset({1, 2, 3, 6, 7, 8, 9})
+
+
+def is_peak_hour(when: datetime | None = None) -> bool:
+    """DeepSeek peak windows: 01:00-04:00 and 06:00-10:00 UTC."""
+    now = when or datetime.now(timezone.utc)
+    return now.hour in _PEAK_HOURS_UTC
+
+
+def price_usage(usage, model: str, prices: dict, *, when=None) -> float:
+    """Cost one call. Splits cached vs uncached prompt tokens when reported."""
+    table = prices[model]
+    multiplier = table.get("peak_multiplier", 2.0) if is_peak_hour(when) else 1.0
+
+    hit = getattr(usage, "prompt_cache_hit_tokens", None)
+    miss = getattr(usage, "prompt_cache_miss_tokens", None)
+    if hit is None or miss is None:
+        # Endpoints that do not report a cache split: charge everything as miss.
+        hit, miss = 0, getattr(usage, "prompt_tokens", 0) or 0
+
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    total = (hit * table["input_cache_hit_per_mtok_usd"]
+             + miss * table["input_cache_miss_per_mtok_usd"]
+             + completion * table["output_per_mtok_usd"])
+    return total * multiplier / 1e6
+```
+
+- [ ] **Step 4: Record the served model, and price with it**
+
+`_record` takes the served model name and falls back to the configured prices
+when the server returns something the config does not know about — an unpriced
+model must produce an approximate number and a truthful `model` column, never a
+`KeyError` that kills the batch:
+
+```python
+    def _record(self, node, run_id, usage, served_model: str | None = None):
+        model = served_model or self.cfg["model"]
+        prices = self.cfg["prices"]
+        priced_as = model if model in prices else self.cfg["model"]
+        cost = price_usage(usage, priced_as, prices)
+        self.conn.execute(
+            "INSERT INTO llm_usage(run_id, node, model, prompt_tokens, "
+            "completion_tokens, estimated_cost_usd) VALUES(?,?,?,?,?,?)",
+            (run_id, node, model, usage.prompt_tokens,
+             usage.completion_tokens, cost))
+        self.conn.commit()
+```
+
+and the call site inside `structured` passes what the server said:
+
+```python
+            self._record(node, run_id, usage, getattr(resp, "model", None))
+```
+
+- [ ] **Step 5: Make the pre-call estimate use the same table**
+
+`_estimate_cost` must not keep its own arithmetic — two costing formulas drift.
+Rewrite it to build a synthetic usage object and call `price_usage`, assuming
+the pessimistic all-cache-miss case (the estimate is a fuse, so erring high is
+correct):
+
+```python
+    def _estimate_cost(self, system: str, user: str) -> float:
+        class _Est:
+            prompt_cache_hit_tokens = 0
+            prompt_cache_miss_tokens = int((len(system) + len(user)) / 4)
+            prompt_tokens = prompt_cache_miss_tokens
+            completion_tokens = 1000
+
+        model = self.cfg["model"]
+        priced_as = model if model in self.cfg["prices"] else model
+        return price_usage(_Est(), priced_as, self.cfg["prices"])
+```
+
+- [ ] **Step 6: Fix the prices and the model name in `config.example.yaml`**
+
+`deepseek-chat` is a legacy alias that already served `deepseek-v4-flash` in the
+probe; pin the real name so the ledger key and the served model agree:
+
+```yaml
+llm:
+  base_url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  daily_spend_cap_usd: 2.00
+  # https://api-docs.deepseek.com/quick_start/pricing/ (checked 2026-08-20).
+  # Off-peak rates; peak (01:00-04:00 and 06:00-10:00 UTC) is 2x.
+  prices:
+    deepseek-v4-flash:
+      input_cache_hit_per_mtok_usd: 0.007
+      input_cache_miss_per_mtok_usd: 0.22
+      output_per_mtok_usd: 0.66
+      peak_multiplier: 2.0
+    deepseek-v4-pro:
+      input_cache_hit_per_mtok_usd: 0.022
+      input_cache_miss_per_mtok_usd: 0.66
+      output_per_mtok_usd: 1.98
+      peak_multiplier: 2.0
+```
+
+The local `config.yaml` is gitignored; update it by hand to match, keeping
+whatever `daily_spend_cap_usd` the user has set.
+
+- [ ] **Step 7: Say so in the README**
+
+The README's spend-ledger paragraph currently describes a flat per-token rate.
+Correct it: the ledger splits cached and uncached prompt tokens, doubles the
+rate during DeepSeek's peak window, and records the model the server actually
+served rather than the alias that was requested. Cite the pricing URL and the
+date it was checked, because these rates move.
+
+- [ ] **Step 8: Run the full suite and commit**
+
+```bash
+python -m pytest -q
+```
+
+```bash
+git add src/offerpilot/llm.py config.example.yaml README.md tests/test_llm.py
+git commit -m "fix: price the model the server served, split cached prompt tokens, model peak hours"
+```
+
+---
+
 ### Task 6: FastAPI review panel
 
 **Files:**
@@ -4516,7 +4813,7 @@ git commit -m "docs: record the real-LLM smoke run"
 | §5 Evals | fixed formula, end-to-end, P/R/F1, P@K, prefilter FN | Task 8 |
 | §5 Groundedness | source_id, numeric, proper-noun heuristics | Task 8 |
 | §5 Results committed | `evals/results/` with commit + timestamp | Task 8 |
-| §Security | untrusted isolation, panel XSS, spend ledger | Tasks 4, 6 (+ Week 1) |
+| §Security | untrusted isolation, panel XSS, spend ledger | Tasks 4, 6, D (+ Week 1) |
 | §Error taxonomy | *repeated* bad source_id → permanent | Task 3 (repair turn) |
 | §Demo mode | temp DB, fixtures, mock LLM, no key | Task 9 |
 | §Testing | end-to-end smoke, 3 real jobs | Task 11 |
