@@ -3,6 +3,18 @@
 Date: 2026-07-24 (rev 4, final — approved, frozen for implementation)
 Status: Approved. Scope changes require a new spec revision with reason.
 
+> **Build status (added 2026-08-20).** This is a design document. It was frozen
+> on 2026-07-24, before implementation, and it describes the full intended
+> system rather than the current build. What exists today is a subset — see
+> `README.md`, which is written against the code.
+>
+> Not built: LangGraph orchestration (`langgraph` is a declared dependency that
+> nothing imports; `src/offerpilot/graph.py` is ordinary Python function calls),
+> retrieval of any kind (no embeddings, no vector store), the application brief
+> node, the review panel or any UI, and the blind-labeled evaluation set. No
+> fit, ranking or groundedness numbers exist, because that eval has not been
+> assembled or run. The match node has never been run against a real API key.
+
 ## Purpose
 
 A local, human-in-the-loop job-search agent. It collects real job postings
@@ -272,6 +284,10 @@ groundedness checks; demo mode; README + demo GIF.
 **Later (cuttable)**: Ashby; LangGraph research-tool branch;
 Playwright careers tool; HN collector; retrieval-method comparison eval;
 automatic KB ingestion from GitHub.
+
+> **These are *target* phrasings for the finished system, not claims about the
+> current build.** Nothing below describes what is shipped today. See the build
+> status note at the top of this file, and `README.md` for what the code does.
 
 ## Resume phrasing targets (honest, staged)
 
