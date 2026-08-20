@@ -130,6 +130,12 @@ def test_ungrounded_high_score_never_reaches_the_brief_node(conn, profile):
     assert calls == ["match"]
     assert conn.execute("SELECT COUNT(*) c FROM review_items"
                         ).fetchone()["c"] == 0
+    # The version's status and the run's status are set by two different
+    # writers -- `db.set_status` in the node, `_finish_run` from the graph's
+    # returned `run_status` -- so asserting only the first leaves the second
+    # free to file a rejected run as "ok".
+    assert conn.execute("SELECT status FROM runs").fetchone()["status"] == \
+        "permanent_error"
 
 
 def test_run_meta_still_reaches_the_runs_row(conn, profile, scoring_llm):
@@ -171,3 +177,50 @@ def test_auth_error_is_still_caught_before_permanent(conn, profile, exc_name):
     assert (after["status"], after["attempt_count"]) == expected[:2]
     assert conn.execute("SELECT status FROM runs").fetchone()["status"] == \
         expected[2]
+
+
+def test_a_writer_that_steals_the_row_mid_call_makes_the_run_abandon(
+        conn, profile, scoring_llm):
+    """A run that loses a race abandons the write and is filed `stale_state`.
+
+    No transaction is held across the LLM call -- that is a global constraint,
+    not an accident -- so between `set_status(..., "matching")` and the write
+    in `persist` another writer can move the version. The double below stands
+    in for whoever does that: a `sweep_stale_matching` pass, a second process,
+    a human resetting a row by hand.
+
+    `persist` must then leave their status alone and hand back *their* status
+    as `final_status`, which is why `run_status` is a separate key: the run
+    did not do what it was asked, so filing it as "ok" would hide the race
+    from the trace. Without the guard this is not merely mislabelled -- the
+    node would insert a review_item and then raise ValueError out of
+    `db.set_status`, because `scored_low -> pending_review` is not in
+    `db.ALLOWED_TRANSITIONS`.
+
+    `brief_enabled` stays off: the brief is a second call to the same double,
+    and this test is about the third node, not the second.
+    """
+    inner = scoring_llm(90)
+    row = _ready_row(conn)
+
+    class StealsTheRowMidCall:
+        def structured(self, **kwargs):
+            result = inner.structured(**kwargs)
+            conn.execute("UPDATE job_versions SET status='scored_low' "
+                         "WHERE id=?", (row["id"],))
+            conn.commit()
+            return result
+
+    final = run_match_for_version(conn, StealsTheRowMidCall(), profile, row,
+                                  threshold=60, max_auto_retries=3)
+
+    assert final == "scored_low"
+    assert conn.execute("SELECT status FROM runs").fetchone()["status"] == \
+        "stale_state"
+    steps = {(r["node"], r["status"]) for r in conn.execute(
+        "SELECT node, status FROM run_steps")}
+    assert ("gate", "stale_state") in steps
+    assert conn.execute("SELECT COUNT(*) c FROM review_items"
+                        ).fetchone()["c"] == 0
+    assert conn.execute("SELECT status FROM job_versions WHERE id=?",
+                        (row["id"],)).fetchone()["status"] == "scored_low"

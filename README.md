@@ -223,7 +223,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-169 tests, all passing, and CI runs them on every push. They need no network and
+170 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, and the LLM client is tested against a fake SDK object.
 
