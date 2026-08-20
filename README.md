@@ -46,8 +46,7 @@ below the threshold, and a recorded reply cannot fail the way a live one can,
 so `scored_low`, `retryable_error` and `permanent_error` are exercised in
 `tests/test_graph.py` rather than in the demo.
 
-![The review panel, showing a job whose eligibility the model could not
-resolve](docs/images/panel.png)
+![The review panel with an unresolved-eligibility job open](docs/images/panel.png)
 
 Everything in that screenshot is demo data. The banner across the top is the
 gate refusing to let an `unknown` eligibility pass silently; the subscores are
@@ -324,8 +323,7 @@ only thing standing between a hand-written `canonical_url` and an anchor.
 
 ### Blind labeling
 
-![The blind labeling view: the job and your profile, no model output
-anywhere](docs/images/blind.png)
+![The blind labeling view: job and profile only, no model output](docs/images/blind.png)
 
 `/blind`, served by the same process, is the review panel with the model
 subtracted. It shows one job posting and a summary of your own profile, and
