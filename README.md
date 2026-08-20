@@ -66,35 +66,43 @@ posting in an `<untrusted_job_posting>` block. Before interpolation,
 the job text, so a posting cannot close the block early.
 
 The response is requested as a JSON object at temperature 0 and validated with
-`MatchResult.model_validate_json`. Bad JSON or a schema violation is
-re-requested, up to 3 attempts inside one `structured()` call, and then becomes
-a permanent error.
-`MatchResult` bounds each subscore (skills 0-30, project 0-20, domain 0-15,
-seniority 0-15, preference 0-20) and a model validator rejects
+`MatchResult.model_validate_json`. A reply that fails is re-requested, up to 3
+attempts inside one `structured()` call, and then becomes a permanent error.
+The re-request is a repair turn, not a re-roll: the rejected reply and the
+reason it was rejected are appended to the conversation, so the model is told
+what to fix. The reason is collapsed to one line and clipped to 300
+characters, because it can quote model-written text back into a trusted user
+turn. `MatchResult` bounds each subscore (skills 0-30, project 0-20,
+domain 0-15, seniority 0-15, preference 0-20) and a model validator rejects
 `eligibility="fail"` unless the model also returned the posting excerpt it is
 failing on.
 
-Grounding check: after validation, `make_evidence_validator` compares every
+Grounding check: `make_evidence_validator` compares every
 `evidence[].source_id` against `Profile.experience_ids()`, the ids declared in
-`profile.yaml`. Any id outside that set raises `PermanentLLMError`, the version
-goes to `permanent_error`, and nothing reaches the queue. The same validator
-also refuses a result that cites nothing at all once it scores at or above the
+`profile.yaml`. It is handed to the client as `structured(validate=...)`, so an
+id outside that set is rejected and re-asked like a schema violation; a model
+that keeps citing invented ids exhausts the 3 attempts, the version goes to
+`permanent_error`, and nothing reaches the queue. The same validator also
+refuses a result that cites nothing at all once it scores at or above the
 review threshold — an uncited recommendation cannot reach a human. Below the
 threshold, and on an eligibility fail, an empty evidence list is allowed: there
-the posting itself is the evidence, and `MatchResult` already demands an excerpt
-from it. That check is in code in `graph.py`. The prompt asks for the same
-thing, but asking is not enforcement: a model that ignores the instruction still
-cannot get an invented id past this check. The total score is summed in Python
-(`models.total_score`), never read off the model.
+the posting itself is the evidence, and `MatchResult` already demands an
+excerpt from it. That check is in code in `graph.py`. The prompt asks for the
+same thing, but asking is not enforcement: a model that ignores the instruction
+still cannot get an invented id past this check. The total score is summed in
+Python (`models.total_score`), never read off the model.
 
 HTTP 429, 5xx, timeouts and connection failures are retryable: the version goes
 back to `ready_for_match` until `match.max_auto_retries` attempts are used, then
-`permanent_error`. Everything else is permanent on the first occurrence. Each
-attempt writes a `run_steps` row with the prompt and either the output or the
-error, and each API response writes token counts and an estimated cost to
-`llm_usage`. Every run also records the git commit and a hash of the effective
-config, so a result can be traced back to the code and settings that produced
-it. Before every attempt the client sums today's `llm_usage` and raises
+`permanent_error`. HTTP 401 and 403 raise `AuthLLMError`, which is neither: a
+rejected key fails every queued job identically, so `cmd_match` aborts the whole
+batch after the first one and the version is handed back to `ready_for_match`
+with its attempt count unspent. Everything else is permanent on the first
+occurrence. Each attempt writes a `run_steps` row with the prompt and either the
+output or the error, and each API response writes token counts and an estimated
+cost to `llm_usage`. Every run also records the git commit and a hash of the
+effective config, so a result can be traced back to the code and settings that
+produced it. Before every attempt the client sums today's `llm_usage` and raises
 `SpendCapExceeded` at or above `llm.daily_spend_cap_usd`, which stops the run
 and leaves the version resumable. The daily boundary is SQLite `date('now')`,
 so the cap resets at UTC midnight, not local midnight.
@@ -129,8 +137,8 @@ content is what sets the shape of the system:
 5. Spend is capped from the usage ledger in the same database.
 
 The worst a hostile posting gets is a schema-shaped answer citing an invented
-evidence id, and that is the case the grounding check turns into
-`permanent_error`.
+evidence id, and that is the case the grounding check rejects, re-asks, and
+turns into `permanent_error` if the model will not correct it.
 
 ## Running it
 
@@ -159,8 +167,10 @@ fatal. `status` prints counts of `job_versions` by status. `match` scores
 everything sitting at `ready_for_match`, and refuses to start if `profile.yaml`
 is missing (so it cannot spend money scoring the synthetic example profile) or
 if `DEEPSEEK_API_KEY` is unset. `retry` sweeps versions stuck in `matching` for
-over 15 minutes back to `ready_for_match` and resets `permanent_error` rows to
-`ready_for_match` with a zeroed attempt count.
+over 15 minutes back to `ready_for_match`, re-prefilters versions orphaned at
+`new` by a crash between the insert and the prefilter, and resets
+`permanent_error` rows to `ready_for_match` with a zeroed attempt count. That
+orphan sweep also runs at the start of `collect`, so a crashed run self-heals.
 
 Every subcommand takes `--db` (default `data/offerpilot.db`), `--config`
 (default `config.yaml`), `--profile` (default `profile.yaml`) and `--limit`
@@ -176,7 +186,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-132 tests, all passing, and CI runs them on every push. They need no network and
+147 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, and the LLM client is tested against a fake SDK object.
 

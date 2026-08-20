@@ -5,7 +5,8 @@ from offerpilot.models import MatchResult, total_score
 from offerpilot.profile import Profile
 from offerpilot.prompts import MATCH_SYSTEM, MATCH_USER
 from offerpilot.store import db
-from offerpilot.llm import RetryableLLMError, PermanentLLMError, SpendCapExceeded
+from offerpilot.llm import (AuthLLMError, RetryableLLMError, PermanentLLMError,
+                            SpendCapExceeded)
 
 
 # A forged delimiter only has to *look* like the real one to the model, so
@@ -86,8 +87,11 @@ def _log_step(conn, run_id, node, attempt, status, input=None, output=None,
 def make_evidence_validator(profile: Profile, threshold: int):
     """Reject semantically wrong MatchResults by raising ValueError.
 
-    Task 3 hands this to `LLMClient.structured(validate=...)` so the model gets
-    a repair turn; until then `run_match_for_version` calls it post-hoc.
+    Handed to `LLMClient.structured(validate=...)`, so a rejection buys the
+    model a repair turn inside the client's 3-attempt budget instead of
+    parking the version on `permanent_error` at the first offence. The
+    messages below are written to be read by the model: they name the mistake
+    and the legal alternatives.
     """
     valid = profile.experience_ids()
 
@@ -132,11 +136,20 @@ def run_match_for_version(conn, llm, profile: Profile, version_row,
     try:
         result: MatchResult = llm.structured(
             node="match", run_id=run_id, system=system, user=user,
-            schema=MatchResult)
-        try:
-            validate_evidence(result)
-        except ValueError as e:
-            raise PermanentLLMError(str(e)) from e
+            schema=MatchResult, validate=validate_evidence)
+    except AuthLLMError as e:
+        # A rejected key is not this job's fault: hand the version back
+        # unspent, so the batch can resume once the key is fixed. Must be
+        # caught before PermanentLLMError, which it subclasses.
+        _log_step(conn, run_id, "match", attempt, "auth_error",
+                  input=prompt_input, error=str(e))
+        conn.execute("UPDATE job_versions SET attempt_count=? WHERE id=?",
+                     (attempt - 1, vid))
+        conn.commit()
+        db.set_status(conn, vid, "retryable_error")
+        db.set_status(conn, vid, "ready_for_match")
+        _finish_run(conn, run_id, "auth_error")
+        raise
     except SpendCapExceeded as e:
         _log_step(conn, run_id, "match", attempt, "spend_cap",
                   input=prompt_input, error=str(e))

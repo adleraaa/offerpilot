@@ -3,8 +3,8 @@ import pytest
 from pydantic import BaseModel
 from offerpilot.store import db
 from offerpilot.models import MatchResult
-from offerpilot.llm import (LLMClient, PermanentLLMError, SpendCapExceeded,
-                            RetryableLLMError)
+from offerpilot.llm import (AuthLLMError, LLMClient, PermanentLLMError,
+                            SpendCapExceeded, RetryableLLMError)
 
 CFG = {"model": "deepseek-chat", "daily_spend_cap_usd": 2.0,
        "base_url": "https://api.deepseek.com",
@@ -222,3 +222,154 @@ def test_estimate_scales_with_prompt_length(conn, cfg):
     small = llm._estimate_cost("s", "u")
     big = llm._estimate_cost("s" * 40000, "u" * 40000)
     assert big > small * 5
+
+
+# --- repair turns and auth errors (Task 3) --------------------------------
+
+class _Resp:
+    def __init__(self, content):
+        self.choices = [type("C", (), {"message": type("M", (), {
+            "content": content})()})()]
+        self.usage = type("U", (), {"prompt_tokens": 10,
+                                    "completion_tokens": 5})()
+
+
+class _SeqClient:
+    """Returns queued payloads; records every messages list it was given."""
+
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.calls = []
+        self.chat = type("Chat", (), {"completions": self})()
+
+    def create(self, **kw):
+        self.calls.append(kw["messages"])
+        return _Resp(self.payloads.pop(0))
+
+
+def _ok_match(source_id="proj"):
+    return json.dumps({
+        "eligibility": "pass", "eligibility_reasons": [],
+        "eligibility_evidence_excerpt": None,
+        "skills_score": 20, "project_score": 10, "domain_score": 10,
+        "seniority_score": 10, "preference_score": 10,
+        "evidence": [{"source_id": source_id, "section": "",
+                      "supporting_text": "x"}],
+        "gaps": [], "uncertainties": [], "confidence": 0.7})
+
+
+def test_validate_failure_triggers_a_repair_turn_then_succeeds(conn, cfg):
+    client = _SeqClient([_ok_match("invented"), _ok_match("proj")])
+    llm = LLMClient(conn, cfg, "k", client=client)
+
+    def validate(m):
+        bad = [e.source_id for e in m.evidence if e.source_id != "proj"]
+        if bad:
+            raise ValueError(f"unknown source_id: {bad}")
+
+    result = llm.structured(node="match", run_id=None, system="s", user="u",
+                            schema=MatchResult, validate=validate)
+    assert result.evidence[0].source_id == "proj"
+    assert len(client.calls) == 2
+    repair_turn = client.calls[1][-1]
+    assert repair_turn["role"] == "user"
+    assert "unknown source_id" in repair_turn["content"]
+
+
+def test_repair_turn_shows_the_model_its_own_rejected_reply(conn, cfg):
+    """The corrective turn is useless without the reply it corrects."""
+    client = _SeqClient([_ok_match("invented"), _ok_match("proj")])
+    llm = LLMClient(conn, cfg, "k", client=client)
+
+    def validate(m):
+        if any(e.source_id != "proj" for e in m.evidence):
+            raise ValueError("unknown source_id")
+
+    llm.structured(node="match", run_id=None, system="s", user="u",
+                   schema=MatchResult, validate=validate)
+    second = client.calls[1]
+    assert [m["role"] for m in second] == ["system", "user", "assistant", "user"]
+    assert "invented" in second[2]["content"]
+    # The first call must not have been polluted by the repair turns.
+    assert len(client.calls[0]) == 2
+
+
+def test_schema_failure_also_gets_a_corrective_turn(conn, cfg):
+    """Bad JSON was already retried, but blind -- the model was never told."""
+    client = _SeqClient(["not json at all", '{"answer": 7}'])
+    llm = LLMClient(conn, cfg, "k", client=client)
+    out = llm.structured(node="match", run_id=None, system="s", user="u",
+                         schema=Out)
+    assert out.answer == 7
+    assert len(client.calls) == 2
+    assert client.calls[1][-1]["role"] == "user"
+    assert "schema" in client.calls[1][-1]["content"].lower()
+
+
+def test_validate_failing_three_times_is_permanent(conn, cfg):
+    client = _SeqClient([_ok_match("bad")] * 3)
+    llm = LLMClient(conn, cfg, "k", client=client)
+
+    def validate(m):
+        raise ValueError("still wrong")
+
+    with pytest.raises(PermanentLLMError):
+        llm.structured(node="match", run_id=None, system="s", user="u",
+                       schema=MatchResult, validate=validate)
+    assert len(client.calls) == 3
+
+
+def test_401_raises_auth_error_not_generic_permanent(conn, cfg):
+    class Boom:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": self})()
+
+        def create(self, **kw):
+            e = Exception("invalid api key")
+            e.status_code = 401
+            raise e
+
+    llm = LLMClient(conn, cfg, "k", client=Boom())
+    with pytest.raises(AuthLLMError):
+        llm.structured(node="match", run_id=None, system="s", user="u",
+                       schema=MatchResult)
+
+
+def test_403_is_an_auth_error_too(conn, cfg):
+    class Boom:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": self})()
+
+        def create(self, **kw):
+            e = Exception("forbidden")
+            e.status_code = 403
+            raise e
+
+    llm = LLMClient(conn, cfg, "k", client=Boom())
+    with pytest.raises(AuthLLMError):
+        llm.structured(node="match", run_id=None, system="s", user="u",
+                       schema=MatchResult)
+
+
+def test_auth_error_is_a_permanent_error_subclass(conn, cfg):
+    """Callers that only know PermanentLLMError must still stop the job."""
+    assert issubclass(AuthLLMError, PermanentLLMError)
+
+
+def test_repair_turn_bounds_the_reason_it_quotes(conn, cfg):
+    """The rejection reason can carry model-written text and a multi-kilobyte
+    ValidationError dump. It is quoted back inside a *user* turn, so it is
+    truncated: bounded prompt growth, and a bounded quantity of untrusted
+    text in the trusted role."""
+    client = _SeqClient([_ok_match("x"), _ok_match("proj")])
+    llm = LLMClient(conn, cfg, "k", client=client)
+
+    def validate(m):
+        if any(e.source_id != "proj" for e in m.evidence):
+            raise ValueError("rejected: " + "A" * 5000)
+
+    llm.structured(node="match", run_id=None, system="s", user="u",
+                   schema=MatchResult, validate=validate)
+    reason_turn = client.calls[1][-1]["content"]
+    assert "rejected:" in reason_turn
+    assert len(reason_turn) < 1000

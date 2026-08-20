@@ -22,14 +22,33 @@ def env(tmp_path):
     return conn, row, load_profile("profile.example.yaml")
 
 
+def _reply(result, validate):
+    """Answer the way LLMClient does once its repair budget is spent.
+
+    The graph now hands `validate` to the client, so a stub that ignores it
+    is not a stub of this client: the real one re-asks the model up to three
+    times and, if the reply is still rejected, raises PermanentLLMError. The
+    stubs below hold a fixed reply, which is exactly the model that never
+    corrects itself, so they go straight to the exhausted outcome.
+    """
+    if validate is not None:
+        try:
+            validate(result)
+        except ValueError as e:
+            raise PermanentLLMError(str(e)) from e
+    return result
+
+
 class StubLLM:
     def __init__(self, result=None, exc=None):
         self.result, self.exc = result, exc
+        self.validate_seen = None
 
     def structured(self, **kwargs):
         if self.exc:
             raise self.exc
-        return self.result
+        self.validate_seen = kwargs.get("validate")
+        return _reply(self.result, self.validate_seen)
 
 
 def good_match(score_each):
@@ -63,12 +82,20 @@ def test_low_score_goes_scored_low(env):
 
 
 def test_invalid_evidence_id_is_permanent(env):
+    """A model that will not stop inventing ids ends on permanent_error.
+
+    The rejection now reaches the model as a repair turn (see
+    tests/test_llm.py); what this pins is that the graph hands the validator
+    over at all, and still refuses the result once the client gives up.
+    """
     conn, row, profile = env
     m = good_match(dict(skills=25, proj=18, dom=12, sen=12, pref=18))
     m.evidence[0].source_id = "made_up_project"
-    status = graph.run_match_for_version(conn, StubLLM(result=m), profile,
+    stub = StubLLM(result=m)
+    status = graph.run_match_for_version(conn, stub, profile,
                                          row, threshold=60, max_auto_retries=3)
     assert status == "permanent_error"
+    assert callable(stub.validate_seen)   # not vacuous: the gate was handed on
 
 
 def test_retryable_error_resets_until_limit(env):
@@ -209,9 +236,7 @@ def test_match_with_no_evidence_does_not_reach_review(conn, profile,
                 eligibility="pass", skills_score=30, project_score=20,
                 domain_score=15, seniority_score=15, preference_score=20,
                 evidence=[], confidence=1.0)
-            if validate is not None:
-                validate(result)
-            return result
+            return _reply(result, validate)
 
     row = _ready_row(conn)
     final = run_match_for_version(conn, NoEvidenceLLM(), profile, row,
@@ -237,10 +262,7 @@ def test_ineligible_job_without_citations_is_not_a_permanent_error(env):
                 skills_score=30, project_score=20, domain_score=15,
                 seniority_score=15, preference_score=20,
                 evidence=[], confidence=0.9)
-            validate = kwargs.get("validate")
-            if validate is not None:
-                validate(result)
-            return result
+            return _reply(result, kwargs.get("validate"))
 
     status = graph.run_match_for_version(conn, IneligibleLLM(), profile, row,
                                          threshold=60, max_auto_retries=3)
@@ -259,12 +281,113 @@ def test_uncited_high_score_with_unknown_eligibility_still_rejected(env):
                 eligibility="unknown", skills_score=30, project_score=20,
                 domain_score=15, seniority_score=15, preference_score=20,
                 evidence=[], confidence=0.9)
-            validate = kwargs.get("validate")
-            if validate is not None:
-                validate(result)
-            return result
+            return _reply(result, kwargs.get("validate"))
 
     status = graph.run_match_for_version(conn, UnknownEligibilityLLM(),
                                          profile, row, threshold=60,
                                          max_auto_retries=3)
     assert status == "permanent_error"
+
+
+# --- auth abort and stuck-`new` recovery (Task 3) -------------------------
+
+def test_auth_error_leaves_job_retryable_and_propagates(conn, profile):
+    """A bad key must not burn the job's attempt budget."""
+    from offerpilot.llm import AuthLLMError
+    from tests.conftest import _ready_row
+
+    class AuthLLM:
+        def structured(self, **kw):
+            raise AuthLLMError("401")
+
+    row = _ready_row(conn)
+    with pytest.raises(AuthLLMError):
+        run_match_for_version(conn, AuthLLM(), profile, row,
+                              threshold=60, max_auto_retries=3)
+    after = conn.execute("SELECT status, attempt_count FROM job_versions "
+                         "WHERE id=?", (row["id"],)).fetchone()
+    assert after["status"] == "ready_for_match"
+    assert after["attempt_count"] == row["attempt_count"]
+    run = conn.execute("SELECT status, completed_at FROM runs").fetchone()
+    assert run["status"] == "auth_error" and run["completed_at"] is not None
+
+
+def test_evidence_validator_is_handed_to_the_client(conn, profile):
+    """The gate has to run *inside* the client, or there is no repair turn."""
+    from tests.conftest import _ready_row
+    seen = {}
+
+    class RecordingLLM:
+        def structured(self, *, node, run_id, system, user, schema,
+                       validate=None):
+            seen["validate"] = validate
+            from offerpilot.models import MatchResult, EvidenceRef
+            result = MatchResult(
+                eligibility="pass", skills_score=30, project_score=20,
+                domain_score=15, seniority_score=15, preference_score=20,
+                evidence=[EvidenceRef(source_id="pathpilot",
+                                      supporting_text="x")],
+                confidence=0.9)
+            validate(result)
+            return result
+
+    run_match_for_version(conn, RecordingLLM(), profile, _ready_row(conn),
+                          threshold=60, max_auto_retries=3)
+    assert callable(seen["validate"])
+    with pytest.raises(ValueError):
+        seen["validate"](graph.MatchResult(
+            eligibility="pass", skills_score=30, project_score=20,
+            domain_score=15, seniority_score=15, preference_score=20,
+            evidence=[], confidence=0.9))
+
+
+def test_sweep_stuck_new_reprefilters_orphans(conn, profile):
+    from offerpilot.store import db
+    from tests.conftest import _make_job
+    job = _make_job()
+    _, vid = db.upsert_job(conn, job)
+    assert conn.execute("SELECT status FROM job_versions WHERE id=?",
+                        (vid,)).fetchone()["status"] == "new"
+    assert db.sweep_stuck_new(conn, profile) == 1
+    assert conn.execute("SELECT status FROM job_versions WHERE id=?",
+                        (vid,)).fetchone()["status"] in {
+        "ready_for_match", "filtered_out"}
+    assert conn.execute("SELECT COUNT(*) c FROM filter_results "
+                        "WHERE job_version_id=?", (vid,)).fetchone()["c"] == 6
+
+
+def test_sweep_stuck_new_leaves_everything_else_alone(conn, profile):
+    """It is a recovery path, not a re-run of the whole pipeline."""
+    from offerpilot.store import db
+    from tests.conftest import _make_job, _ready_row
+    ready = _ready_row(conn, "ready")
+    _, orphan = db.upsert_job(conn, _make_job("orphan"))
+    assert db.sweep_stuck_new(conn, profile) == 1
+    assert conn.execute("SELECT status FROM job_versions WHERE id=?",
+                        (ready["id"],)).fetchone()["status"] == "ready_for_match"
+    assert conn.execute("SELECT COUNT(*) c FROM filter_results "
+                        "WHERE job_version_id=?",
+                        (ready["id"],)).fetchone()["c"] == 0
+
+
+def test_sweep_stuck_new_isolates_a_row_that_cannot_be_prefiltered(
+        conn, profile, monkeypatch):
+    """The sweep runs at the start of every `collect`; one bad row must not
+    take the command down with it, the way an unisolated per-job failure once
+    took down the whole collect batch."""
+    from offerpilot.store import db
+    from offerpilot import prefilter
+    from tests.conftest import _make_job
+    _, bad = db.upsert_job(conn, _make_job("boom"))
+    _, good = db.upsert_job(conn, _make_job("fine"))
+    real = prefilter.run_prefilter
+    monkeypatch.setattr(
+        prefilter, "run_prefilter",
+        lambda job, prof: (_ for _ in ()).throw(RuntimeError("boom"))
+        if job.external_id == "boom" else real(job, prof))
+
+    assert db.sweep_stuck_new(conn, profile) == 1      # only the good one
+    statuses = {r["id"]: r["status"] for r in conn.execute(
+        "SELECT id, status FROM job_versions")}
+    assert statuses[bad] == "new"
+    assert statuses[good] in {"ready_for_match", "filtered_out"}

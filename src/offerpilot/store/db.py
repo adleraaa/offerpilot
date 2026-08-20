@@ -167,6 +167,47 @@ def sweep_stale_matching(conn, max_age_minutes: int = 15) -> int:
     return cur.rowcount
 
 
+def sweep_stuck_new(conn, profile) -> int:
+    """Re-prefilter job versions orphaned at status='new'.
+
+    `collect` writes the version first and prefilters second, so anything
+    that throws in between (a bad posting, a crash, a Ctrl-C) leaves a row at
+    'new' that no command looks at again: `match` reads 'ready_for_match' and
+    the prefilter only ever runs on freshly collected jobs. This is the
+    recovery path. It touches nothing but 'new' rows, so re-running it is
+    harmless.
+
+    Returns how many rows it actually moved. A row that cannot be
+    reconstructed or prefiltered is left at 'new' rather than raising: this
+    runs at the start of every `collect`, and one unrecoverable row must not
+    take the command with it. Such rows stay visible in `status` as `new`.
+    """
+    from offerpilot import prefilter
+    from offerpilot.models import NormalizedJob
+
+    rows = conn.execute(
+        "SELECT jv.*, j.source, j.external_id, j.company_id, j.canonical_url "
+        "FROM job_versions jv JOIN jobs j ON j.id = jv.job_id "
+        "WHERE jv.status='new'").fetchall()
+    swept = 0
+    for row in rows:
+        try:
+            job = NormalizedJob(
+                source=row["source"], external_id=row["external_id"],
+                company_id=row["company_id"], title=row["title"],
+                location=row["location"] or "", url=row["url"],
+                canonical_url=row["canonical_url"],
+                description_text=row["description_text"] or "",
+                posted_at=row["posted_at"])
+            results = prefilter.run_prefilter(job, profile)
+        except Exception:
+            continue
+        record_filter_results(conn, row["id"], results)
+        set_status(conn, row["id"], prefilter.decide(results))
+        swept += 1
+    return swept
+
+
 def record_filter_results(conn, version_id: int,
                           results: list[FilterResult]) -> None:
     conn.executemany(

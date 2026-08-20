@@ -209,3 +209,37 @@ def test_run_records_git_commit_and_config_hash(conn, profile, scoring_llm):
                                     "config_hash": "def456"})
     r = conn.execute("SELECT git_commit, config_hash FROM runs").fetchone()
     assert r["git_commit"] == "abc123" and r["config_hash"] == "def456"
+
+
+def test_match_aborts_the_whole_batch_on_an_auth_error(conn, profile, capsys):
+    """A rejected key must cost one call, not one call per job."""
+    from offerpilot.cli import cmd_match
+    from offerpilot.llm import AuthLLMError
+    from conftest import _ready_row
+
+    class BadKeyLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def structured(self, **kwargs):
+            self.calls += 1
+            raise AuthLLMError("401 invalid api key")
+
+    for i in range(3):
+        _ready_row(conn, str(i))
+    llm = BadKeyLLM()
+    cfg = {"match": {"score_threshold": 60, "max_auto_retries": 3}}
+    counts = cmd_match(conn, cfg, profile, llm)
+    assert llm.calls == 1
+    assert counts.get("error", 0) == 0
+    assert cli.cmd_status(conn) == {"ready_for_match": 3}
+    assert "credential" in capsys.readouterr().out.lower()
+
+
+def test_retry_prefilters_orphaned_new_versions(conn, profile):
+    """A crash between upsert_job and prefilter leaves nothing to recover."""
+    from offerpilot.cli import cmd_retry
+    seed(conn, ext="orphan")
+    out = cmd_retry(conn, profile)
+    assert out["orphans_prefiltered"] == 1
+    assert cli.cmd_status(conn).get("new", 0) == 0

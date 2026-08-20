@@ -6,7 +6,7 @@ from offerpilot.store import db
 from offerpilot import prefilter
 from offerpilot.collectors import greenhouse, lever
 from offerpilot.graph import run_match_for_version
-from offerpilot.llm import LLMClient, SpendCapExceeded
+from offerpilot.llm import LLMClient, SpendCapExceeded, AuthLLMError
 
 
 def _company_label(company) -> str:
@@ -80,6 +80,12 @@ def cmd_match(conn, cfg, profile, llm, limit=None, run_meta=None) -> dict:
                                           threshold=threshold,
                                           max_auto_retries=retries,
                                           run_meta=run_meta)
+        except AuthLLMError as e:
+            # Every remaining job would fail this way too; one rejected call
+            # is the whole diagnosis. Caught before the generic handler
+            # below, which would otherwise count 191 identical "errors".
+            print(f"[match] aborted - credentials rejected: {e}")
+            break
         except SpendCapExceeded as e:
             print(f"[match] stopped: {e}")
             break
@@ -102,6 +108,7 @@ def cmd_status(conn) -> dict:
 
 def cmd_retry(conn, profile) -> dict:
     stale = db.sweep_stale_matching(conn)
+    orphans = db.sweep_stuck_new(conn, profile)
     reset = 0
     for row in db.get_versions_by_status(conn, "permanent_error"):
         db.set_status(conn, row["id"], "ready_for_match")
@@ -109,7 +116,8 @@ def cmd_retry(conn, profile) -> dict:
                      (row["id"],))
         conn.commit()
         reset += 1
-    return {"reset": reset, "stale_swept": stale}
+    return {"reset": reset, "stale_swept": stale,
+            "orphans_prefiltered": orphans}
 
 
 def main(argv=None):
@@ -158,6 +166,12 @@ def main(argv=None):
         profile = load_profile(profile_path)
 
     if args.command == "collect":
+        # A run that crashed between upsert_job and the prefilter left rows
+        # at 'new' that nothing else reads; heal them before collecting more.
+        orphans = db.sweep_stuck_new(conn, profile)
+        if orphans:
+            print(f"[collect] re-prefiltered {orphans} orphaned job "
+                  f"version(s) from an earlier run")
         print(cmd_collect(conn, cfg, profile, limit=args.limit))
     elif args.command == "match":
         db.sweep_stale_matching(conn)
