@@ -132,11 +132,12 @@ def main(argv=None):
                     "survivors against your profile, and queues them for your "
                     "approval. Nothing is ever sent to an employer.")
     p.add_argument("command",
-                   choices=["collect", "match", "status", "retry"],
+                   choices=["collect", "match", "status", "retry", "panel"],
                    help="collect: pull postings from configured ATS boards. "
                         "match: score ready jobs with the LLM. "
                         "status: counts by pipeline status. "
-                        "retry: reset errored jobs and sweep orphans.")
+                        "retry: reset errored jobs and sweep orphans. "
+                        "panel: serve the local review panel.")
     p.add_argument("--db", default="data/offerpilot.db",
                    help="SQLite path (default: %(default)s)")
     p.add_argument("--config", default="config.yaml",
@@ -191,3 +192,15 @@ def main(argv=None):
         print(cmd_status(conn))
     elif args.command == "retry":
         print(cmd_retry(conn, profile))
+    elif args.command == "panel":
+        # Imported here so the other four subcommands never pay for
+        # FastAPI's import time.
+        from offerpilot.panel import app as panel_app
+        panel_cfg = cfg.get("panel") or {}
+        host = panel_cfg.get("host", "127.0.0.1")
+        port = int(panel_cfg.get("port", 8000))
+        print(f"review panel on http://{host}:{port}  (ctrl-c to stop)")
+        # The panel opens its own short-lived connection per request; holding
+        # this one open would just be a second writer on the same WAL file.
+        conn.close()
+        panel_app.serve(args.db, profile, host=host, port=port)

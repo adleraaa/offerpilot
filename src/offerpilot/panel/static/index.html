@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OfferPilot — Review Panel</title>
+<link rel="stylesheet" href="/static/style.css">
+<header>
+  <h1>OfferPilot</h1>
+  <nav><a href="/">Review queue</a> · <a href="/blind">Blind labeling</a></nav>
+</header>
+<main>
+  <aside id="queue"><h2>Pending review (<span id="count">0</span>)</h2>
+    <ul id="queue-list"></ul></aside>
+  <section id="detail">
+    <p class="empty">Select a job from the queue.</p>
+  </section>
+</main>
+<!-- Outside #detail on purpose: clear($("detail")) must not delete the node
+     setStatus() writes to. -->
+<p id="status" class="muted"></p>
+<script src="/static/panel.js"></script>

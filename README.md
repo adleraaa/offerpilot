@@ -174,11 +174,45 @@ if anything else moved it. Then `eligibility == "fail"` goes to
 `review_items` row holding the full validated `MatchResult` and the computed
 total, with the version set to `pending_review`.
 
-`pending_review` is where the pipeline ends. `store/db.py` declares
-`pending_review -> approved | rejected | saved`, but no code here performs that
-transition, so approving today means reading `review_items` out of SQLite
-yourself. Every status change goes through `db.set_status`, which refuses any
-transition not listed in `ALLOWED_TRANSITIONS`.
+`pending_review` is where the automated pipeline ends and the human takes over.
+`store/db.py` declares `pending_review -> approved | rejected | saved`, and the
+review panel below is the only thing that performs those transitions. Every
+status change goes through `db.set_status`, which refuses any transition not
+listed in `ALLOWED_TRANSITIONS`.
+
+## Review panel
+
+`python -m offerpilot panel` serves `src/offerpilot/panel/` on
+`127.0.0.1:8000` (`panel.host` / `panel.port` in `config.yaml`). The queue is
+ordered by total score; opening a job shows the subscores, the cited evidence,
+the gaps and uncertainties, the brief and the full posting text, and links out
+to the original. An `eligibility` of `unknown` gets a banner saying so, because
+unknown is not a pass.
+
+Approve, save for later and reject are the only three moves, and a reject needs
+a reason from the fixed vocabulary in `labels.py`: the API answers 422 without
+one, and 409 rather than 500 if the job was already decided in another tab.
+Neither refusal writes anything. Every decision that does go through writes a
+row in `labels` with `label_source='review_feedback'`, which is what keeps
+panel decisions separable from blind eval labels later.
+
+The brief is editable. An edit is validated against the `ApplicationBrief`
+schema and stored in `review_items.edited_brief_json`, next to — never over —
+the model's original, so the two stay comparable.
+
+There is no auth, no CORS and no session, and `serve` binds the loopback
+interface. That is the design for a single-user local tool that can approve a
+job: not reachable off the machine, so there is nothing to authenticate. Do not
+put it behind a tunnel or change `panel.host` without adding auth first.
+
+Job text stays untrusted all the way to the screen. The API returns it
+verbatim as JSON, and `panel/static/panel.js` builds every node with
+`textContent`; the markup-injecting DOM properties are banned outright in that
+file, and a test greps the source for them. The posting's own URL gets the
+same treatment, because it arrives inside the ATS payload and
+`canonicalize_url` does not constrain its scheme: the detail view renders a
+link only for `http`/`https` and falls back to plain text otherwise, so a
+`javascript:` URL has nothing to run in.
 
 ## Why the pipeline is fixed
 
@@ -218,6 +252,7 @@ python -m offerpilot collect
 python -m offerpilot status
 python -m offerpilot match
 python -m offerpilot retry
+python -m offerpilot panel
 ```
 
 `collect` fetches every company in `config.yaml`, upserts, prefilters and sets
@@ -230,6 +265,8 @@ over 15 minutes back to `ready_for_match`, re-prefilters versions orphaned at
 `new` by a crash between the insert and the prefilter, and resets
 `permanent_error` rows to `ready_for_match` with a zeroed attempt count. That
 orphan sweep also runs at the start of `collect`, so a crashed run self-heals.
+`panel` serves the review panel described above and blocks until you stop it;
+it makes no LLM calls, so it needs no API key.
 
 Every subcommand takes `--db` (default `data/offerpilot.db`), `--config`
 (default `config.yaml`), `--profile` (default `profile.yaml`) and `--limit`
@@ -245,33 +282,31 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-170 tests, all passing, and CI runs them on every push. They need no network and
+199 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
-`tests/fixtures/`, and the LLM client is tested against a fake SDK object.
+`tests/fixtures/`, the LLM client is tested against a fake SDK object, and the
+panel is driven in-process with FastAPI's `TestClient`.
 
 ## Storage
 
 One SQLite file. Written by the current code: `jobs`, `job_versions`,
 `filter_results`, `companies`, `labels`, `runs`, `run_steps`, `review_items`,
 `llm_usage`. `db.migrate` adds new columns to an existing database rather than
-requiring a rebuild. Created but not written yet:
-`review_items.edited_brief_json` and `edited_at` (`db.save_edited_brief`
-exists, but nothing edits a brief, because there is no editor).
+requiring a rebuild. `labels`, `review_items.edited_brief_json` and
+`review_items.edited_at` are written by the review panel and by nothing else.
 
 ## What is not built
 
 - No retrieval. No embeddings, no vector store, no Chroma or
   sentence-transformers. Evidence is the structured profile and nothing else.
-- No review panel or web UI. Nothing serves the queue, and there is no approve,
-  reject or edit path. The label vocabulary and the queries a reviewer would
-  need exist (`labels.py`, `db.get_review_queue`, `db.get_blind_candidates`),
-  but nothing drives them.
-- Briefs are generated and stored, but nothing displays them. Reading one today
-  means pulling `review_items.brief_json` out of SQLite yourself.
+- No blind labeling view. `db.get_blind_candidates` and the `blind_eval` label
+  source exist, and the panel's nav links to `/blind`, but that page is not
+  built: the link answers 404 today.
 - No eval runner. The small blind-labeled evaluation set described in the design
   spec has not been assembled or run, so there are no fit, ranking or
   groundedness numbers.
-- No demo mode. `match` needs a real key; `collect`, `status` and `retry` do not.
+- No demo mode. `match` needs a real key; `collect`, `status`, `retry` and
+  `panel` do not.
 - No Ashby collector and no Playwright careers-page collector. Greenhouse and
   Lever are the only sources.
 - Neither LLM node has ever been run against a real API key. Every test of the
@@ -282,9 +317,9 @@ exists, but nothing edits a brief, because there is no editor).
   code and scored nothing.
 
 Smaller known gaps, all visible in the code: `cmd_retry` still zeroes
-`attempt_count` with raw SQL after going through `set_status`; the grounding
+`attempt_count` with raw SQL after going through `set_status`; and the grounding
 check binds evidence to the score threshold, so a low-scoring result may still
-cite nothing; and `save_edited_brief` is written against a column no node fills.
+cite nothing.
 
 ## Docs
 
