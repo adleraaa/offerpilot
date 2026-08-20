@@ -14,8 +14,11 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # v5/v6 run on Node 24. Node 20 leaves the runners on
+      # 2026-09-16, and these are the two actions that would
+      # have taken the badge red without anyone touching the repo.
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
