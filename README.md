@@ -46,13 +46,15 @@ below the threshold, and a recorded reply cannot fail the way a live one can,
 so `scored_low`, `retryable_error` and `permanent_error` are exercised in
 `tests/test_graph.py` rather than in the demo.
 
-> **TODO — screenshots.** This README ships without images. Two are worth
-> adding once someone can point a browser at the demo: `docs/images/panel.png`
-> (the review panel with a queue item open, evidence and brief visible), which
-> belongs just below this section, and `docs/images/blind.png` (the blind
-> labeling view), which belongs in **Blind labeling**. Create `docs/images/`,
-> drop the PNGs in, and add the two image lines — not before, because a broken
-> image is worse than no image.
+![The review panel, showing a job whose eligibility the model could not
+resolve](docs/images/panel.png)
+
+Everything in that screenshot is demo data. The banner across the top is the
+gate refusing to let an `unknown` eligibility pass silently; the subscores are
+the model's, the 77 beside them is Python's sum of them; the cited evidence is
+checked against `demo/demo_profile.yaml` before the job is allowed into the
+queue at all; and the row of buttons at the bottom is the only way a job ever
+leaves it.
 
 ## How it works
 
@@ -322,6 +324,9 @@ only thing standing between a hand-written `canonical_url` and an anchor.
 
 ### Blind labeling
 
+![The blind labeling view: the job and your profile, no model output
+anywhere](docs/images/blind.png)
+
 `/blind`, served by the same process, is the review panel with the model
 subtracted. It shows one job posting and a summary of your own profile, and
 that is all it is sent: `GET /api/blind/next` carries no score, no subscores,
@@ -551,14 +556,14 @@ yet:** no blind labels have been collected, so `evals/results/` is empty.
   `retry`, `panel`, `eval` and `demo` do not.
 - No Ashby collector and no Playwright careers-page collector. Greenhouse and
   Lever are the only sources.
-- No live run of the Lever collector. It has unit tests over recorded payloads,
-  but `config.yaml` has only ever listed Greenhouse boards, so its `fetch` has
-  never been pointed at `api.lever.co` — every job in every database this
-  project has produced came from Greenhouse. Its `parse` is exercised by
-  `tests/test_collectors.py`; its network path is not.
+- No Lever postings in a working database. The collector's network path has
+  now been exercised once against a live board (2026-08-20: 54 postings
+  fetched and parsed, epoch-ms timestamps converted, no entities left in the
+  text, 4 filtered on location), but that was a throwaway database — the
+  configured boards are still Greenhouse, so every job in the real database
+  came from Greenhouse.
 - No research or tool-calling branch. The graph has three nodes and no tools;
   the model is never given one to call.
-- No screenshots in this README. See the TODO above.
 
 Smaller known gaps, all visible in the code: `cmd_retry` still zeroes
 `attempt_count` with raw SQL after going through `set_status`; and the grounding
