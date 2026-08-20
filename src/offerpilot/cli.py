@@ -71,6 +71,9 @@ def cmd_match(conn, cfg, profile, llm, limit=None, run_meta=None) -> dict:
     counts: dict[str, int] = {}
     threshold = cfg["match"]["score_threshold"]
     retries = cfg["match"]["max_auto_retries"]
+    # The brief is the pipeline's second LLM call. `run_match_for_version`
+    # leaves that spend to its caller; this is the caller, and config decides.
+    brief_enabled = (cfg.get("brief") or {}).get("enabled", True)
     done = 0
     for row in db.get_versions_by_status(conn, "ready_for_match"):
         if limit is not None and done >= limit:
@@ -79,6 +82,7 @@ def cmd_match(conn, cfg, profile, llm, limit=None, run_meta=None) -> dict:
             final = run_match_for_version(conn, llm, profile, row,
                                           threshold=threshold,
                                           max_auto_retries=retries,
+                                          brief_enabled=brief_enabled,
                                           run_meta=run_meta)
         except AuthLLMError as e:
             # Every remaining job would fail this way too; one rejected call

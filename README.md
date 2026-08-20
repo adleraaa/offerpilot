@@ -4,18 +4,24 @@
 
 A local, human-in-the-loop job-search agent. It pulls postings from public ATS
 APIs, drops the ones that violate hard constraints using deterministic rules,
-scores the rest against a structured candidate profile with one LLM call, and
+scores the rest against a structured candidate profile with one LLM call,
+writes a short application brief for the ones that clear the threshold, and
 stops at a review queue in SQLite. Nothing is ever sent or submitted to an
 employer. There is no outreach code in this repo: the only outbound network
-calls are the collectors' GETs to the two ATS APIs and the scoring call to the
-configured LLM endpoint.
+calls are the collectors' GETs to the two ATS APIs and the two calls to the
+configured LLM endpoint — scoring, and the brief for jobs that reach review.
 
 ```
-collect  ->  prefilter  ->  match (LLM)  ->  gate  ->  pending_review
-             (6 rules,      (one node, schema   (Python)   (terminal)
-              no LLM)       and grounding
-                            checked)
+collect -> prefilter -> match (LLM) -> gate -> brief (LLM) -> persist
+           (6 rules,    (schema and    (code)  (only above    (pending_review,
+            no LLM)      grounding              threshold)     terminal)
+                         checked)
 ```
+
+The four boxes after `collect` are a compiled LangGraph `StateGraph`
+(`graph.build_match_graph`): nodes `match`, `brief` and `persist`, with the
+gate as a conditional edge. The topology is fixed at import time and the model
+never picks an edge.
 
 ## Collect
 
@@ -55,10 +61,11 @@ figure in the posting, hourly or annualized, so a low aside cannot sink a range
 that clears the floor. 26 snippets taken from real postings are checked as a
 regression net in `tests/test_prefilter.py`.
 
-## Match: the only LLM node
+## Match: the scoring node
 
 `src/offerpilot/graph.py` and `src/offerpilot/llm.py`. One scoring step per job
-version, and no other model call anywhere in the pipeline.
+version. The brief below is the only other model call in the pipeline, and it
+runs only for the jobs the gate sends to review.
 
 The prompt (`prompts.py`) puts the trusted profile JSON first and wraps the
 posting in an `<untrusted_job_posting>` block. Before interpolation,
@@ -82,10 +89,12 @@ Grounding check: `make_evidence_validator` compares every
 `profile.yaml`. It is handed to the client as `structured(validate=...)`, so an
 id outside that set is rejected and re-asked like a schema violation; a model
 that keeps citing invented ids exhausts the 3 attempts, the version goes to
-`permanent_error`, and nothing reaches the queue. `run_match_for_version` then
-runs that same validator again on whatever the client handed back, before the
+`permanent_error`, and nothing reaches the queue. The `persist` node then runs
+that same validator again on whatever the client handed back, before the
 result can reach the review queue: the repair turn depends on the client
-honouring `validate`, the gate does not. The same validator also refuses a
+honouring `validate`, the gate does not. The routing gate checks it too, so a
+result that is about to be rejected never buys the model a brief written off
+invented evidence. The same validator also refuses a
 result that cites nothing at all once it scores at or above the review
 threshold — an uncited recommendation cannot reach a human. Below the
 threshold, and on an eligibility fail, an empty evidence list is allowed: there
@@ -110,11 +119,35 @@ produced it. Before every attempt the client sums today's `llm_usage` and raises
 and leaves the version resumable. The daily boundary is SQLite `date('now')`,
 so the cap resets at UTC midnight, not local midnight.
 
+## Brief: the second LLM node
+
+`src/offerpilot/brief.py`. When the gate routes a job to review, the graph
+makes one more call and stores an `ApplicationBrief` in
+`review_items.brief_json`: why it fits, the gaps, which resume bullets to
+emphasize, four themed talking points and an optional outreach paragraph. It
+is written for the human doing the applying, and nothing sends it anywhere.
+
+The brief prompt is built like the match prompt — profile first, posting last
+and delimited — and the match result is interpolated too. The model-written
+parts of that result (`gaps`, `uncertainties`) are sanitized as well, because
+they were written while reading the posting. `make_brief_validator` holds the
+brief to the match node's grounding rule: every `evidence_source_id` must
+exist in `profile.yaml`, and no talking point may claim to be tailored to an
+employer's application questions, because none are ever collected.
+
+The brief is a nice-to-have and the graph treats it as one: if the call fails,
+the `brief` node logs a `brief_failed` step and the job still reaches
+`pending_review` with its match intact. `run_match_for_version` makes the call
+only when its caller asks for it — `match` asks, from `brief.enabled` in
+`config.yaml`, default true.
+
 ## Gate and terminal state
 
-Also plain Python, at the end of `run_match_for_version`. It re-reads the
-version's status after the call and abandons the write if anything else moved
-it. Then `eligibility == "fail"` goes to `eligibility_failed`, a total below
+Still plain Python, and still no model involvement: the gate is a conditional
+edge (`graph._gate`, which writes nothing), and the write happens in the
+`persist` node. `persist` re-reads the version's status and abandons the write
+if anything else moved it. Then `eligibility == "fail"` goes to
+`eligibility_failed`, a total below
 `match.score_threshold` goes to `scored_low`, and anything else inserts a
 `review_items` row holding the full validated `MatchResult` and the computed
 total, with the version set to `pending_review`.
@@ -131,7 +164,8 @@ A job posting is text written by a stranger, fetched over the network, and put
 into a prompt. Treating that as a prompt-injection surface rather than as
 content is what sets the shape of the system:
 
-1. Control flow is plain Python function calls. The model picks no route, no
+1. Control flow is a graph whose topology is fixed in code, and every edge —
+   including the gate — is decided by Python. The model picks no route, no
    tool and no next step. It fills in one schema and returns.
 2. Every model output is schema-checked before anything is written.
 3. Every score that reaches a human must cite evidence ids, and each id must
@@ -189,7 +223,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-157 tests, all passing, and CI runs them on every push. They need no network and
+169 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, and the LLM client is tested against a fake SDK object.
 
@@ -198,35 +232,29 @@ no API key: collectors are tested by parsing recorded payloads from
 One SQLite file. Written by the current code: `jobs`, `job_versions`,
 `filter_results`, `companies`, `labels`, `runs`, `run_steps`, `review_items`,
 `llm_usage`. `db.migrate` adds new columns to an existing database rather than
-requiring a rebuild. Created but not written yet: `review_items.brief_json`
-(`db.save_brief` and `brief.generate_brief` both exist; nothing calls either,
-because the brief is not in the pipeline yet).
+requiring a rebuild. Created but not written yet:
+`review_items.edited_brief_json` and `edited_at` (`db.save_edited_brief`
+exists, but nothing edits a brief, because there is no editor).
 
 ## What is not built
 
-- No LangGraph. `langgraph` is declared in `pyproject.toml` but nothing imports
-  it; `graph.py` is ordinary function calls.
 - No retrieval. No embeddings, no vector store, no Chroma or
   sentence-transformers. Evidence is the structured profile and nothing else.
 - No review panel or web UI. Nothing serves the queue, and there is no approve,
   reject or edit path. The label vocabulary and the queries a reviewer would
   need exist (`labels.py`, `db.get_review_queue`, `db.get_blind_candidates`),
   but nothing drives them.
-- The application brief is written but not wired in. `src/offerpilot/brief.py`
-  holds the `ApplicationBrief` model, the prompt pair, a grounding validator
-  that rejects invented evidence ids and talking points falsely marked as
-  tailored, and `generate_brief`. Nothing calls it: the pipeline still ends at
-  the gate, so no brief is generated, stored or displayed, and the match call
-  remains the only LLM call any command makes.
+- Briefs are generated and stored, but nothing displays them. Reading one today
+  means pulling `review_items.brief_json` out of SQLite yourself.
 - No eval runner. The small blind-labeled evaluation set described in the design
   spec has not been assembled or run, so there are no fit, ranking or
   groundedness numbers.
 - No demo mode. `match` needs a real key; `collect`, `status` and `retry` do not.
 - No Ashby collector and no Playwright careers-page collector. Greenhouse and
   Lever are the only sources.
-- The match node has never been run against a real API key. Every test of it
-  uses a stub, so the prompt has not been checked against real model output and
-  the cost of a real run is unmeasured.
+- Neither LLM node has ever been run against a real API key. Every test of the
+  match and brief nodes uses a stub, so neither prompt has been checked against
+  real model output and the cost of a real run is unmeasured.
 
 Smaller known gaps, all visible in the code: `cmd_retry` still zeroes
 `attempt_count` with raw SQL after going through `set_status`; the grounding
