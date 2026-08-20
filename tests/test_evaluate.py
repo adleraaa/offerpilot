@@ -312,3 +312,74 @@ def test_cli_eval_refuses_the_synthetic_example_profile_fallback(tmp_path):
         cli.main(["eval", "--db", str(db_path), "--config", str(cfg_path),
                   "--profile", str(tmp_path / "no-such-profile.yaml")])
     assert not results.exists()
+
+
+# --- regression net built from the first real brief (smoke run, 2026-08-20) ---
+
+REAL_BRIEF_PROSE = (
+    "This role aligns with my CS education at Stevens, my hands-on experience "
+    "building LLM-powered AI tools, and the flexible remote schedule I need. "
+    "Built OfferPilot, a human-in-the-loop job-search agent with rubric "
+    "scoring. Developed PathPilot AI, a Next.js app that generates course "
+    "plans. Created browser automation tools with strict safety boundaries."
+)
+
+
+def test_sentence_initial_verbs_are_not_proper_nouns(profile):
+    """The first real brief flagged 'Created'/'Developed' -- all false."""
+    brief = {"why_it_fits": REAL_BRIEF_PROSE, "cited_evidence": [],
+             "main_gaps": [], "resume_bullets_to_emphasize": [],
+             "talking_points": [], "outreach_paragraph": None}
+    flags = groundedness_flags(brief, profile, "Stevens CS internship.")
+    for false_positive in ("Created", "Developed", "Built", "This"):
+        assert false_positive not in flags["unsupported_proper_nouns"]
+
+
+def test_bullet_initial_verbs_are_not_proper_nouns(profile):
+    """Resume bullets each start a new line, so each start is sentence-initial."""
+    brief = {"why_it_fits": "", "cited_evidence": [], "main_gaps": [],
+             "resume_bullets_to_emphasize": [
+                 "Created a batch OCR pipeline",
+                 "Deployed a Next.js app to Vercel",
+                 "Led a two-person project"],
+             "talking_points": [], "outreach_paragraph": None}
+    flags = groundedness_flags(brief, profile, "job text")
+    for w in ("Created", "Deployed", "Led"):
+        assert w not in flags["unsupported_proper_nouns"]
+
+
+def test_hyphenated_compound_of_known_words_is_not_flagged(profile):
+    brief = {"why_it_fits": "I build LLM-powered tools.", "cited_evidence": [],
+             "main_gaps": [], "resume_bullets_to_emphasize": [],
+             "talking_points": [], "outreach_paragraph": None}
+    flags = groundedness_flags(brief, profile, "We use LLM tooling.")
+    assert "LLM-powered" not in flags["unsupported_proper_nouns"]
+
+
+def test_a_genuine_mid_sentence_proper_noun_is_still_flagged(profile):
+    """The heuristic must not be defanged into uselessness."""
+    brief = {"why_it_fits": "I shipped this while working at Netflix.",
+             "cited_evidence": [], "main_gaps": [],
+             "resume_bullets_to_emphasize": [], "talking_points": [],
+             "outreach_paragraph": None}
+    flags = groundedness_flags(brief, profile, "We build agent tooling.")
+    assert "Netflix" in flags["unsupported_proper_nouns"]
+
+
+def test_the_real_brief_flags_only_genuinely_unsupported_names(profile):
+    """The first real brief was 3-for-3 false positives; none may return.
+
+    The `profile` fixture is deliberately minimal (one experience, one skill),
+    so names it really does not contain -- OfferPilot, Next.js -- SHOULD be
+    flagged. Asserting flag_count == 0 here would only prove the heuristic had
+    been defanged.
+    """
+    brief = {"why_it_fits": REAL_BRIEF_PROSE, "cited_evidence": [],
+             "main_gaps": [], "resume_bullets_to_emphasize": [],
+             "talking_points": [], "outreach_paragraph": None}
+    flags = groundedness_flags(brief, profile,
+                               "Stevens CS part-time internship, remote.")
+    flagged = set(flags["unsupported_proper_nouns"])
+    assert flagged & {"OfferPilot", "Next.js"}, "heuristic went blind"
+    assert not (flagged & {"Created", "Developed", "Built", "This",
+                           "LLM-powered", "Stevens"}), flagged

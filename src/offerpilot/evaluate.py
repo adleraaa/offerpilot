@@ -98,6 +98,45 @@ def _profile_text(profile) -> str:
     return json.dumps(profile.model_dump(), ensure_ascii=False, default=str)
 
 
+
+_SEGMENT_END = frozenset(".!?;:\n")
+_BULLET_MARKERS = "-*•"
+
+
+def _is_segment_initial(prose: str, start: int) -> bool:
+    """True if this capitalised word opens a sentence, line or bullet.
+
+    English capitalises the first word of every sentence, so treating those
+    as proper nouns made the heuristic fire on 'Created', 'Developed' and
+    'Built' -- 3 of 3 flags on the first real brief were this false positive.
+    """
+    i = start - 1
+    while i >= 0 and prose[i] in " \t":
+        i -= 1
+    if i < 0:
+        return True
+    if prose[i] in _SEGMENT_END:
+        return True
+    # Bullet and list markers.
+    return prose[i] in _BULLET_MARKERS and (i == 0 or prose[i - 1] in " \n")
+
+
+def _is_supported(word: str, haystack_lower: str) -> bool:
+    """Is this token backed by the profile or the posting?
+
+    For a hyphenated compound only the capitalised parts are a claim about a
+    real entity: in "LLM-powered", "LLM" must be supported but "powered" is
+    grammar. Requiring every part flagged ordinary adjectives as inventions.
+    """
+    if word.lower() in haystack_lower:
+        return True
+    parts = [p for p in word.split("-") if p]
+    if len(parts) > 1:
+        claims = [p for p in parts if p[:1].isupper()]
+        return bool(claims) and all(p.lower() in haystack_lower for p in claims)
+    return False
+
+
 def groundedness_flags(brief: dict, profile, job_text: str) -> dict:
     """Automated heuristics, not fact-checking (spec section 5).
 
@@ -123,7 +162,9 @@ def groundedness_flags(brief: dict, profile, job_text: str) -> dict:
     prose_parts += brief.get("resume_bullets_to_emphasize") or []
     prose_parts += [tp.get("point", "")
                     for tp in brief.get("talking_points") or []]
-    prose = " ".join(prose_parts)
+    # Newline-joined so each bullet and talking point starts its own segment:
+    # a capitalised word at the start of one is grammar, not a proper noun.
+    prose = "\n".join(part for part in prose_parts if part)
 
     haystack = _profile_text(profile) + " " + job_text
     haystack_numbers = {n.replace(",", "") for n in _NUMBER.findall(haystack)}
@@ -136,10 +177,11 @@ def groundedness_flags(brief: dict, profile, job_text: str) -> dict:
         known_skills.update(str(s) for s in (group or []))
     haystack_lower = haystack.lower()
     unsupported_proper_nouns = sorted({
-        w for w in _PROPER_NOUN.findall(prose)
-        if w not in _STOPWORDS
-        and w not in known_skills
-        and w.lower() not in haystack_lower})
+        m.group(0) for m in _PROPER_NOUN.finditer(prose)
+        if not _is_segment_initial(prose, m.start())
+        and m.group(0) not in _STOPWORDS
+        and m.group(0) not in known_skills
+        and not _is_supported(m.group(0), haystack_lower)})
 
     return {"unknown_source_ids": unknown_ids,
             "unsupported_numbers": unsupported_numbers,
