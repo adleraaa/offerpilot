@@ -119,6 +119,28 @@ produced it. Before every attempt the client sums today's `llm_usage` and raises
 and leaves the version resumable. The daily boundary is SQLite `date('now')`,
 so the cap resets at UTC midnight, not local midnight.
 
+Costing is `llm.price_usage`, and the pre-call estimate and the ledger row both
+go through it so the two cannot drift. It prices three things the flat
+per-token rate this project started with got wrong. Cached and uncached prompt
+tokens are billed separately, from `prompt_cache_hit_tokens` and
+`prompt_cache_miss_tokens` when the endpoint reports them: a cache hit costs
+about a thirtieth of a miss, and since every job in a batch resends the same
+system prompt and the same profile, almost all of them are hits after the first
+call. Any prompt token the split does not account for is charged at the miss
+rate, because a ledger that under-charges is a fuse that never blows. The rate
+doubles inside DeepSeek's peak windows, 01:00-04:00 and 06:00-10:00 UTC. And
+the row is keyed on the model the server said it served, not the one that was
+requested -- `deepseek-chat` is a legacy alias that comes back as
+`deepseek-v4-flash`, so recording the request would have priced the wrong model
+and filed a name that never ran. A served model missing from the price table
+falls back to the configured one rather than raising, so an unrecognised model
+costs an approximate number, not a dead batch.
+
+The rates live in `config.yaml` under `llm.prices`, keyed by model, and are
+taken from <https://api-docs.deepseek.com/quick_start/pricing/> as checked on
+2026-08-20 against a live probe. They move; the shipped numbers are a starting
+point to re-check, not a guarantee.
+
 ## Brief: the second LLM node
 
 `src/offerpilot/brief.py`. When the gate routes a job to review, the graph
@@ -254,7 +276,10 @@ exists, but nothing edits a brief, because there is no editor).
   Lever are the only sources.
 - Neither LLM node has ever been run against a real API key. Every test of the
   match and brief nodes uses a stub, so neither prompt has been checked against
-  real model output and the cost of a real run is unmeasured.
+  real model output and the cost of a real run is unmeasured. One standalone
+  probe on 2026-08-20 did call the API to read back a real `usage` object --
+  that is where the pricing above comes from -- but it did not go through this
+  code and scored nothing.
 
 Smaller known gaps, all visible in the code: `cmd_retry` still zeroes
 `attempt_count` with raw SQL after going through `set_status`; the grounding

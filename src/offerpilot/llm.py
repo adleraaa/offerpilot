@@ -1,5 +1,48 @@
 import json
+from datetime import datetime, timezone
+
 from pydantic import BaseModel, ValidationError
+
+# DeepSeek charges double during two published windows, and prices cached
+# prompt tokens ~31x below uncached ones. Both matter here: OfferPilot resends
+# an identical system prompt plus the whole profile for every job in a batch,
+# so after the first call almost every prompt token is a cache hit. Rates and
+# windows: https://api-docs.deepseek.com/quick_start/pricing/ (checked
+# 2026-08-20); the numbers themselves live in config, only the shape is here.
+_PEAK_HOURS_UTC = frozenset({1, 2, 3, 6, 7, 8, 9})
+
+
+def is_peak_hour(when: datetime | None = None) -> bool:
+    """DeepSeek peak windows: 01:00-04:00 and 06:00-10:00 UTC."""
+    now = when or datetime.now(timezone.utc)
+    return now.hour in _PEAK_HOURS_UTC
+
+
+def price_usage(usage, model: str, prices: dict, *, when=None) -> float:
+    """Cost one call. Splits cached vs uncached prompt tokens when reported.
+
+    The single costing function: the pre-call estimate and the post-call
+    ledger row both go through it, because two formulas drift apart and the
+    fuse then stops matching the thing it is fusing.
+    """
+    table = prices[model]
+    multiplier = table.get("peak_multiplier", 2.0) if is_peak_hour(when) else 1.0
+
+    prompt = getattr(usage, "prompt_tokens", 0) or 0
+    hit = getattr(usage, "prompt_cache_hit_tokens", None)
+    miss = getattr(usage, "prompt_cache_miss_tokens", None)
+    if hit is None or miss is None or hit + miss < prompt:
+        # Endpoints that report no cache split, or one that does not add up:
+        # charge every unattributed prompt token at the dearer miss rate. The
+        # ledger is a fuse, so under-charging is the dangerous direction.
+        hit = hit or 0
+        miss = max(prompt - hit, 0)
+
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    total = (hit * table["input_cache_hit_per_mtok_usd"]
+             + miss * table["input_cache_miss_per_mtok_usd"]
+             + completion * table["output_per_mtok_usd"])
+    return total * multiplier / 1e6
 
 
 # A rejection reason is quoted back to the model inside a *user* turn, and it
@@ -54,21 +97,56 @@ class LLMClient:
             "WHERE created_at >= date('now')").fetchone()
         return row["s"]
 
-    def _estimate_cost(self, system: str, user: str) -> float:
-        prices = self.cfg["prices"][self.cfg["model"]]
-        # ~4 chars per token is the standard rough ratio; assume a 1k reply.
-        prompt_tokens = (len(system) + len(user)) / 4
-        return (prompt_tokens * prices["input_per_mtok_usd"]
-                + 1000 * prices["output_per_mtok_usd"]) / 1e6
+    def _price_key(self, model: str) -> str:
+        """Which price table to charge `model` against.
 
-    def _record(self, node, run_id, usage):
-        prices = self.cfg["prices"][self.cfg["model"]]
-        cost = (usage.prompt_tokens * prices["input_per_mtok_usd"]
-                + usage.completion_tokens * prices["output_per_mtok_usd"]) / 1e6
+        Two names can miss the table. The configured one may be an alias --
+        a 2026-08-20 probe asked for `deepseek-chat` and was served
+        `deepseek-v4-flash` -- and the served one may be newer than the
+        config. Neither may raise: an unpriced model must still produce a
+        number, so the fallback is the configured table and, failing that,
+        the dearest table on file. Erring high is the safe direction for a
+        spending fuse.
+        """
+        prices = self.cfg["prices"]
+        if model in prices:
+            return model
+        if self.cfg["model"] in prices:
+            return self.cfg["model"]
+        if not prices:
+            raise KeyError("llm.prices is empty; no rate to charge against")
+        return max(prices, key=lambda m: prices[m]["output_per_mtok_usd"])
+
+    def _estimate_cost(self, system: str, user: str) -> float:
+        """Pessimistic pre-call estimate: every prompt token a cache miss.
+
+        The estimate is a fuse, not an invoice -- it runs before the call, so
+        it cannot know the cache split the server will report. Assuming the
+        expensive case means the cap fires early rather than late.
+        """
+        class _Est:
+            # ~4 chars per token is the standard rough ratio; assume a 1k reply.
+            prompt_cache_hit_tokens = 0
+            prompt_cache_miss_tokens = int((len(system) + len(user)) / 4)
+            prompt_tokens = prompt_cache_miss_tokens
+            completion_tokens = 1000
+
+        return price_usage(_Est(), self._price_key(self.cfg["model"]),
+                           self.cfg["prices"])
+
+    def _record(self, node, run_id, usage, served_model: str | None = None):
+        """Write one ledger row, keyed on the model the server actually served.
+
+        Recording the requested name would price the wrong model and put a
+        name in `llm_usage.model` that never ran, which is also what the
+        `runs` / `run_steps` reproducibility trail depends on being true.
+        """
+        model = served_model or self.cfg["model"]
+        cost = price_usage(usage, self._price_key(model), self.cfg["prices"])
         self.conn.execute(
             "INSERT INTO llm_usage(run_id, node, model, prompt_tokens, "
             "completion_tokens, estimated_cost_usd) VALUES(?,?,?,?,?,?)",
-            (run_id, node, self.cfg["model"], usage.prompt_tokens,
+            (run_id, node, model, usage.prompt_tokens,
              usage.completion_tokens, cost))
         self.conn.commit()
 
@@ -100,7 +178,8 @@ class LLMClient:
                     temperature=0)
                 usage = resp.usage
                 content = resp.choices[0].message.content
-                self._record(node, run_id, usage)
+                self._record(node, run_id, usage,
+                             getattr(resp, "model", None))
             except Exception as e:  # SDK/network + malformed-response errors
                 status = getattr(e, "status_code", None)
                 name = type(e).__name__
