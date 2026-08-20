@@ -27,3 +27,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Several tests import `tests.conftest` helpers. `python -m pytest`
+# puts the repo root on sys.path and a bare `pytest` does not, so
+# without this the first command a reader tries aborts on collection.
+pythonpath = ["."]

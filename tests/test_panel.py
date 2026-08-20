@@ -193,15 +193,25 @@ def test_panel_javascript_never_uses_innerHTML():
 def test_panel_javascript_only_links_out_to_http_urls():
     """The posting URL comes from the ATS payload, so it is untrusted too.
 
-    `canonicalize_url` lowercases a scheme, it does not constrain one, so a
-    `javascript:` href is the one injection `textContent` cannot stop. Every
-    href assignment must therefore sit behind the single scheme allowlist.
+    `canonicalize_url` refuses a non-http(s) scheme at the collector boundary,
+    but demo fixtures build `NormalizedJob` directly and skip it, so this
+    render-site allowlist is load-bearing rather than belt-and-braces. An href
+    is the one injection `textContent` cannot stop.
+
+    This reads panel.js as source: there is no JS runtime in this suite. It
+    therefore pins the guard's *shape* — a negated test that returns early —
+    because asserting only that the regex appears somewhere stays green if
+    someone inverts it.
     """
     source = (STATIC / "panel.js").read_text(encoding="utf-8")
     assigns = re.findall(r"\S+\.href\s*=[^\n]*", source)
     assert assigns == ["link.href = url;"], assigns
-    assert re.search(r"/\^https\?:\\/\\//i", source), (
-        "panel.js must allowlist an http(s) scheme before assigning an href")
+    guard = re.search(
+        r"if \(typeof url !== \"string\" \|\| !/\^https\?:\\/\\//i\.test\(url\)\)"
+        r"\s*\{\s*return ", source)
+    assert guard, (
+        "panel.js must reject a non-http(s) url and return BEFORE assigning "
+        "an href; the negated early-return form is what this pins")
 
 
 def test_api_returns_job_text_verbatim_without_executing_it(client, tmp_path,

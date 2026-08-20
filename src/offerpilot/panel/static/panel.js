@@ -81,11 +81,12 @@ function evidenceBlock(evidence) {
 }
 
 function externalLink(url) {
-  // The posting's URL arrives inside the ATS payload and keeps whatever
-  // scheme it came with (`canonicalize_url` lowercases the scheme, it does
-  // not constrain it). An href is the last place in this file where job data
-  // could still become executable, so only http(s) becomes a link and
-  // anything else is shown as plain text.
+  // The posting's URL arrives inside the ATS payload. `canonicalize_url`
+  // refuses a non-http(s) scheme at the collector boundary, but demo fixtures
+  // build NormalizedJob directly and never pass through it, so this check is
+  // load-bearing rather than belt-and-braces. An href is the last place in
+  // this file where job data could still become executable, so only http(s)
+  // becomes a link and anything else is shown as plain text.
   if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
     return el("p", url || "no link recorded", "muted");
   }

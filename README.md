@@ -275,10 +275,13 @@ Job text stays untrusted all the way to the screen. The API returns it
 verbatim as JSON, and `panel/static/panel.js` builds every node with
 `textContent`; the markup-injecting DOM properties are banned outright in that
 file, and a test greps the source for them. The posting's own URL gets the
-same treatment, because it arrives inside the ATS payload and
-`canonicalize_url` does not constrain its scheme: the detail view renders a
-link only for `http`/`https` and falls back to plain text otherwise, so a
-`javascript:` URL has nothing to run in.
+same treatment, and it is guarded twice. `canonicalize_url` refuses any scheme
+outside `http`/`https` at the collector boundary, so a `javascript:` or `data:`
+URL never reaches the database from a real posting. The detail view then
+renders a link only for `http`/`https` and falls back to plain text otherwise.
+The second guard is not redundant: demo fixtures construct `NormalizedJob`
+directly and never pass through `canonicalize_url`, so the render site is the
+only thing standing between a hand-written `canonical_url` and an anchor.
 
 ### Blind labeling
 
@@ -564,8 +567,9 @@ node, the review panel and the blind-labeled evaluation harness as not built.
 All four exist and are described above. The spec is frozen — scope changes take
 a new revision, not an edit — so this README, not the banner, is the current
 account of what runs. What the banner still gets right is the rest of **What is
-not built** above: no retrieval, no eval numbers, and no run of either LLM node
-against a real API key.
+not built** above: no retrieval and no eval numbers. Its claim that neither LLM
+node has run against a real key is also out of date — see **Smoke run,
+2026-08-20**.
 
 `docs/superpowers/plans/` holds the implementation plans, including the
 remaining Week 2 work.
