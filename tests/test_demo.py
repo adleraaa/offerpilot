@@ -16,6 +16,7 @@ import pytest
 from offerpilot import cli
 from offerpilot.brief import ApplicationBrief, make_brief_validator
 from offerpilot.demo import DEMO_DIR, MockLLM, run_demo, seed_demo_db
+from offerpilot.evaluate import run_eval
 from offerpilot.graph import make_evidence_validator, run_match_for_version
 from offerpilot.llm import LLMClient, PermanentLLMError
 from offerpilot.models import MatchResult
@@ -60,6 +61,38 @@ def test_recorded_outputs_only_cite_ids_the_demo_profile_defines():
                   for tp in payload.get("talking_points", [])}
     assert cited
     assert cited <= valid
+
+
+def test_the_demo_briefs_pass_the_projects_own_groundedness_check(tmp_path):
+    """The flagship demo must not fail the standard this repo advertises.
+
+    `evaluate.groundedness_flags` is the check the README sells, and `demo` is
+    the first command it tells a reader to run. The recorded brief for demo-1
+    claimed "Pydantic-validated" structured outputs, a fallback for "malformed
+    JSON", and a "Kubernetes" gap -- three proper nouns in neither the demo
+    profile nor the demo posting, so the project's own eval flagged its own
+    showcase brief three times.
+
+    Driven through `run_eval` rather than `groundedness_flags` directly, so the
+    `job_text` this asserts against is the one the harness really composes
+    (title + company_id + description_text) and cannot drift from it.
+    """
+    path = str(tmp_path / "demo.db")
+    _, prof = seed_demo_db(path)
+    conn = db.connect(path)
+    for row in db.get_review_queue(conn):
+        db.record_label(conn, row["job_version_id"],
+                        label_source="blind_eval", fit_label="good_fit")
+    result = run_eval(conn, prof, results_dir=str(tmp_path / "results"))
+    g = result["groundedness"]
+    assert g["briefs_checked"] == 2, g
+    assert g == {"briefs_checked": 2, "briefs_with_flags": 0,
+                 "unknown_source_ids": 0, "unsupported_numbers": 0,
+                 "unsupported_proper_nouns": 0}, (
+        f"the demo briefs are flagged by the repo's own groundedness check: "
+        f"{g}. Run offerpilot.evaluate.groundedness_flags over each brief in "
+        f"demo/recorded_outputs.json to see which tokens, then reword the "
+        f"fixture -- do not loosen the check.")
 
 
 # --- MockLLM ---------------------------------------------------------------

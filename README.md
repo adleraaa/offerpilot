@@ -598,7 +598,7 @@ pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-307 tests, all passing, and CI runs them on every push. They need no network and
+308 tests, all passing, and CI runs them on every push. They need no network and
 no API key: collectors are tested by parsing recorded payloads from
 `tests/fixtures/`, the LLM client is tested against a fake SDK object, the panel
 is driven in-process with FastAPI's `TestClient`, and the graph is exercised

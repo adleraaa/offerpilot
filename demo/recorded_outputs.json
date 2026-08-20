@@ -11,7 +11,7 @@
       {"source_id": "invoice_tool", "section": "projects",
        "supporting_text": "Batch OCR pipeline turning scanned invoices into spreadsheets."}
     ],
-    "gaps": ["No production Kubernetes exposure."],
+    "gaps": ["No production experience running evaluation harnesses."],
     "uncertainties": [],
     "confidence": 0.86
   },
@@ -21,16 +21,16 @@
       {"source_id": "pathpilot", "section": "projects",
        "supporting_text": "LLM-powered course planner with structured outputs and fallbacks."}
     ],
-    "main_gaps": ["No production Kubernetes exposure."],
+    "main_gaps": ["No production experience running evaluation harnesses."],
     "resume_bullets_to_emphasize": [
-      "Built PathPilot, an LLM course planner with Pydantic-validated structured outputs and deterministic fallbacks.",
+      "Built PathPilot, an LLM course planner with structured outputs and deterministic fallbacks.",
       "Shipped a batch OCR pipeline that turned scanned invoices into spreadsheets."
     ],
     "talking_points": [
       {"theme": "why_this_role", "point": "The posting names evaluation harnesses, which is the part of PathPilot I found hardest and most interesting.", "evidence_source_id": "pathpilot", "generic": true},
-      {"theme": "relevant_project", "point": "PathPilot: structured outputs plus a fallback path when the model returned malformed JSON.", "evidence_source_id": "pathpilot", "generic": true},
+      {"theme": "relevant_project", "point": "PathPilot: structured outputs plus a fallback path for when the reply did not parse.", "evidence_source_id": "pathpilot", "generic": true},
       {"theme": "main_strength", "point": "Turning a flaky model call into a system with defined failure modes.", "evidence_source_id": "invoice_tool", "generic": true},
-      {"theme": "gap_to_address", "point": "I have not run Kubernetes in production; I would want to pair on deploys early.", "evidence_source_id": "pathpilot", "generic": true}
+      {"theme": "gap_to_address", "point": "I have not run an evaluation harness against a live model; I would want to pair on that early.", "evidence_source_id": "pathpilot", "generic": true}
     ],
     "outreach_paragraph": null
   },
