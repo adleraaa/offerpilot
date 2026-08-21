@@ -3,17 +3,24 @@
 Date: 2026-07-24 (rev 4, final — approved, frozen for implementation)
 Status: Approved. Scope changes require a new spec revision with reason.
 
-> **Build status (added 2026-08-20).** This is a design document. It was frozen
-> on 2026-07-24, before implementation, and it describes the full intended
-> system rather than the current build. What exists today is a subset — see
-> `README.md`, which is written against the code.
+> **Build status (added 2026-08-20, revised 2026-08-20 later the same day).**
+> This is a design document. It was frozen on 2026-07-24, before implementation,
+> and it describes the full intended system rather than the current build. What
+> exists today is a subset — see `README.md`, which is written against the code.
 >
-> Not built: LangGraph orchestration (`langgraph` is a declared dependency that
-> nothing imports; `src/offerpilot/graph.py` is ordinary Python function calls),
-> retrieval of any kind (no embeddings, no vector store), the application brief
-> node, the review panel or any UI, and the blind-labeled evaluation set. No
-> fit, ranking or groundedness numbers exist, because that eval has not been
-> assembled or run. The match node has never been run against a real API key.
+> Built since this spec was frozen: the orchestration is a compiled LangGraph
+> `StateGraph` (three nodes, with the gate as a conditional edge and the
+> topology fixed at import time — `src/offerpilot/graph.py`); the application
+> brief node; and the blind-labeled evaluation set, which has now been run once
+> over 40 labels. The match and brief nodes have both been run against a live
+> API key.
+>
+> Still not built: retrieval of any kind — no embeddings, no vector store. This
+> one was dropped rather than deferred: by implementation time the structured
+> profile already supplied every `source_id` the grounding check validates
+> against, so retrieval was not buying recall the system did not already have.
+> The chunking and the citation check survive; the vector store does not. Also
+> not built: the review panel UI, beyond the local labelling tool.
 
 ## Purpose
 
