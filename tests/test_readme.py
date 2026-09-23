@@ -191,10 +191,17 @@ def test_project_layout_lists_only_paths_that_exist():
 
 
 def _spec_not_built() -> str:
-    """The `Not built:` sentence out of the frozen spec's status banner."""
+    """Every "not built:" clause in the frozen spec's status banner, joined.
+
+    The banner first said `Not built:`; its 2026-08-20 revision says
+    `Still not built:` and `Also not built:`. Splitting on the one literal
+    spelling crashed on the revision. A banner with no such clause has
+    nothing left to list, which comes back as an empty string.
+    """
     text = (REPO_ROOT / SPEC).read_text(encoding="utf-8")
     banner = re.sub(r"^> ?", "", text[:text.index("\n## ")], flags=re.M)
-    return " ".join(banner.split("Not built:", 1)[1].split())
+    clauses = re.split(r"not built:", banner, flags=re.IGNORECASE)[1:]
+    return " ".join(" ".join(clauses).split())
 
 
 def test_readme_does_not_vouch_for_a_stale_spec_banner():
