@@ -658,15 +658,14 @@ with stub clients that return schema-valid objects.
 was frozen before implementation and describes a larger system than the one
 above, so read it as a record of intent, not as a description of the code.
 
-It carries a build-status banner, and **that banner is itself out of date**: it
-predates the Week 2 work and still lists the LangGraph orchestration, the brief
-node, the review panel and the blind-labeled evaluation harness as not built.
-All four exist and are described above. The spec is frozen — scope changes take
-a new revision, not an edit — so this README, not the banner, is the current
-account of what runs. What the banner still gets right is the rest of **What is
-not built** above: no retrieval and no eval numbers. Its claim that neither LLM
-node has run against a real key is also out of date — see **Smoke run,
-2026-08-20**.
+It carries a build-status banner, revised on 2026-08-20 after the Week 2 work.
+The revision records the LangGraph orchestration, the brief node, the
+blind-labeled evaluation set and the live-key runs as built, and says retrieval
+was dropped, which matches **What is not built** above. One line of it is still
+**out of date**: it lists the review panel UI as not built beyond the local
+labelling tool, but the panel exists and is described under **Review panel**
+above. The spec is frozen — scope changes take a new revision, not an edit — so
+this README, not the banner, is the current account of what runs.
 
 `docs/superpowers/plans/` holds the implementation plans, including the
 remaining Week 2 work.
