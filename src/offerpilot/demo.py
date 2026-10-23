@@ -3,7 +3,7 @@
 `offerpilot demo` seeds a throwaway SQLite database from `demo/` and serves the
 review panel against it. There is no config file, no `profile.yaml`, no API key
 and no network call anywhere in this path -- the only thing standing in for the
-model is `MockLLM`, which replays outputs recorded by hand.
+model is `MockLLM`, which replays fixed outputs stored as fixtures.
 
 The demo runs the *same* graph as a real run. That is the point of it: if the
 demo took a shortcut around `run_match_for_version`, what it showed would be a
