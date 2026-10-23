@@ -319,7 +319,7 @@ URL never reaches the database from a real posting. The detail view then
 renders a link only for `http`/`https` and falls back to plain text otherwise.
 The second guard is not redundant: demo fixtures construct `NormalizedJob`
 directly and never pass through `canonicalize_url`, so the render site is the
-only thing standing between a hand-written `canonical_url` and an anchor.
+only thing standing between a fixture-supplied `canonical_url` and an anchor.
 
 ### Blind labeling
 
@@ -533,15 +533,15 @@ than shipped as a file of copied postings.
 
 ### Results, 2026-08-20 (n = 40)
 
-Forty jobs labelled by the candidate in the blind view, from a corpus of 1,899
-postings across six Greenhouse boards. Nine were labelled `good_fit`, 31
-`poor_fit`, none `uncertain`.
+Forty `blind_eval` labels (provenance: see the correction below), on jobs from
+a corpus of 1,899 postings across six Greenhouse boards. Nine were labelled
+`good_fit`, 31 `poor_fit`, none `uncertain`.
 
 Correction added 2026-10-22: the database does not show these labels being
 entered one at a time through the `/blind` page. All 40 `blind_eval` rows were
-written in two batches (15 rows stamped 2026-08-20 22:23:40 and 25 rows stamped
-22:25:23), and every row carries a `notes` value that the blind page does not
-send. The sample was also picked from jobs the pipeline had already processed,
+written in two batches (15 rows stamped 2026-08-20 22:23:40 UTC and 25 rows
+stamped 22:25:23 UTC), and every row carries a `notes` value that the blind
+page does not send. The sample was also picked from jobs the pipeline had already processed,
 not drawn at random from the corpus: it holds 24 of the 27 job versions that
 reached the match node (22 of the 25 `eligibility_failed`, both
 `pending_review`) plus 16 `filtered_out`, and none of the 1,493 still waiting
@@ -557,13 +557,13 @@ in `ready_for_match`. Read the numbers below with that selection in mind.
 | Groundedness flags | 0, over 2 briefs |
 
 **The pipeline is far too conservative, and that is the finding.** It never
-surfaced a job the candidate did not want — precision is perfect — but it lost
-seven of the nine they did want. Four were dropped by the prefilter's
+surfaced a job labelled `poor_fit` — precision is perfect — but it lost seven
+of the nine labelled `good_fit`. Four were dropped by the prefilter's
 `graduation_window` rule, which is working exactly as specified: the postings
 name a 2027 or 2028 graduation window and the candidate finishes in 2029.
 (At the time of this evaluation the profile listed a 2029 graduation; the
 candidate now expects to graduate in May 2028. The eval has not been re-run
-against the updated profile.) The
+with a May 2028 graduation.) The
 other three were failed by the match node on eligibility. So the conservative
 principle, written to stop the rules from silently losing good jobs, is not
 achieving that: the loss has just moved from unparseable text to correctly
@@ -578,7 +578,7 @@ the forty labelled jobs ever received a score, so Precision@10 is computed over
 a pool of two. An earlier version of this harness padded the unscored jobs with
 a sentinel score, which made them tie and let the sort's stability order them by
 *label insertion order* — reporting a confident 0.9 that would have changed if
-the same person had labelled in a different sequence. Unscored jobs are now
+the same labels had been inserted in a different order. Unscored jobs are now
 excluded from the ranking, because a job the pipeline never scored has no rank.
 
 One more thing this run showed, before any of the above: the corpus matters more
@@ -593,12 +593,13 @@ starting point, not a recommendation.
 - No retrieval. No embeddings, no vector store, no Chroma or
   sentence-transformers. Evidence is the structured profile and nothing else.
 - No eval beyond one 40-label run. The harness works and the numbers
-  above are real, but 40 labels from one person on one afternoon is a
-  sanity check, not a measurement. `uncertain` was never used, and only
-  two jobs were ever ranked.
+  above are real, but 40 labels written in two batches under two minutes
+  apart (see the correction under **Results, 2026-08-20**) are a sanity
+  check, not a measurement. `uncertain` was never used, and only two jobs
+  were ever ranked.
 - No recorded *real* model outputs. `demo` exists and needs no key, but the
-  outputs it replays from `demo/recorded_outputs.json` were written by hand to
-  exercise each terminal state, not captured from a live model.
+  outputs it replays from `demo/recorded_outputs.json` were written as fixtures
+  to exercise each terminal state, not captured from a live model.
 - No sustained real-model run. Both LLM nodes have now been exercised against
   the live API once (see **Smoke run, 2026-08-20**), but on 5 jobs, so prompt
   behaviour across a full batch and across job types is still largely unproven. One standalone
@@ -685,7 +686,9 @@ remaining Week 2 work.
 
 ## How this was built
 
-Developed between 2026-07-24 and 2026-09-23 with Claude Code (an AI coding
-agent) as a pair programmer; 52 of 70 commits carry a Co-Authored-By trailer.
-The corrections dated 2026-10-22 and this section were added afterwards, also
-with Claude Code.
+Built with [Claude Code](https://claude.com/claude-code), an AI coding agent.
+52 of the 70 commits made before October 22, 2026 carry a Co-Authored-By:
+Claude trailer; a commit without the trailer is not evidence that it was
+written by hand. Those 70 commits are dated July 24 to September 23, 2026
+(US Pacific time). The corrections dated 2026-10-22 and this section were
+added afterwards, also with Claude Code.
