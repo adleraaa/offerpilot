@@ -537,6 +537,16 @@ Forty jobs labelled by the candidate in the blind view, from a corpus of 1,899
 postings across six Greenhouse boards. Nine were labelled `good_fit`, 31
 `poor_fit`, none `uncertain`.
 
+Correction added 2026-10-22: the database does not show these labels being
+entered one at a time through the `/blind` page. All 40 `blind_eval` rows were
+written in two batches (15 rows stamped 2026-08-20 22:23:40 and 25 rows stamped
+22:25:23), and every row carries a `notes` value that the blind page does not
+send. The sample was also picked from jobs the pipeline had already processed,
+not drawn at random from the corpus: it holds 24 of the 27 job versions that
+reached the match node (22 of the 25 `eligibility_failed`, both
+`pending_review`) plus 16 `filtered_out`, and none of the 1,493 still waiting
+in `ready_for_match`. Read the numbers below with that selection in mind.
+
 | | |
 |---|---|
 | Precision | **1.00** (2 TP, 0 FP) |
@@ -550,7 +560,10 @@ postings across six Greenhouse boards. Nine were labelled `good_fit`, 31
 surfaced a job the candidate did not want — precision is perfect — but it lost
 seven of the nine they did want. Four were dropped by the prefilter's
 `graduation_window` rule, which is working exactly as specified: the postings
-name a 2027 or 2028 graduation window and the candidate finishes in 2029. The
+name a 2027 or 2028 graduation window and the candidate finishes in 2029.
+(At the time of this evaluation the profile listed a 2029 graduation; the
+candidate now expects to graduate in May 2028. The eval has not been re-run
+against the updated profile.) The
 other three were failed by the match node on eligibility. So the conservative
 principle, written to stop the rules from silently losing good jobs, is not
 achieving that: the loss has just moved from unparseable text to correctly
@@ -669,3 +682,10 @@ this README, not the banner, is the current account of what runs.
 
 `docs/superpowers/plans/` holds the implementation plans, including the
 remaining Week 2 work.
+
+## How this was built
+
+Developed between 2026-07-24 and 2026-09-23 with Claude Code (an AI coding
+agent) as a pair programmer; 52 of 70 commits carry a Co-Authored-By trailer.
+The corrections dated 2026-10-22 and this section were added afterwards, also
+with Claude Code.
