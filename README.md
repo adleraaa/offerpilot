@@ -683,12 +683,3 @@ this README, not the banner, is the current account of what runs.
 
 `docs/superpowers/plans/` holds the implementation plans, including the
 remaining Week 2 work.
-
-## How this was built
-
-Built with [Claude Code](https://claude.com/claude-code), an AI coding agent.
-52 of the 70 commits made before October 22, 2026 carry a Co-Authored-By:
-Claude trailer; a commit without the trailer is not evidence that it was
-written by hand. Those 70 commits are dated July 24 to September 23, 2026
-(US Pacific time). The corrections dated 2026-10-22 and this section were
-added afterwards, also with Claude Code.
