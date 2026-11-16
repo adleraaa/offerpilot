@@ -588,6 +588,40 @@ no eval run on that set could have said anything. The boards in `config.example.
 are real and reachable so a fresh clone collects something, but they are a
 starting point, not a recommendation.
 
+## Pipeline v2 and the second eval (in progress, November 2026)
+
+The August finding above is now a change, behind `pipeline.version` in the
+config (`v1` stays the default):
+
+- **Prefilter.** In v2 a `graduation_window` or `location` fail no longer
+  removes the job. It is handed to the match prompt as a warning, quoting the
+  sentence the rule matched. The other four rules still remove jobs.
+- **Match.** The v2 prompt tells the model not to count the graduation year in
+  any subscore and to type every `eligibility="fail"` as `location`,
+  `work_authorization`, `graduation_year` or `other`
+  (`MatchResult.eligibility_conflict_type`).
+- **Gate.** v2 removes a job after the model only for a `location` or
+  `work_authorization` conflict (`graph.is_hard_fail`). A graduation-year,
+  `other` or untyped fail becomes a warning and the job is routed by its score.
+
+The second eval is built to avoid the August set's two problems:
+
+- **The sample.** `scripts/build_eval_set.py` draws 100 job versions at random
+  (fixed seed) from all 6,060 postings collected on 2026-11-12 from 24
+  student-heavy boards (`configs/poster-2026-11.yaml`), not from jobs the
+  pipeline had already processed. Sixty come from student-level titles and
+  forty from everything else, because a plain random draw from a corpus that
+  is about 8% student-level would hold too few good fits to measure recall.
+- **The labels.** Two people label the same 100 jobs independently in a
+  spreadsheet that shows the posting and the profile and nothing the pipeline
+  produced. `scripts/import_labels.py` reports Cohen's kappa, records the jobs
+  both labelers agree on as `blind_eval` rows, and the disagreements are
+  settled together afterwards.
+
+`scripts/compare_versions.py` then runs v1 and v2 on separate copies of the
+labeled database, so both are measured against the same labels. No results
+yet: the labels are not in.
+
 ## What is not built
 
 - No retrieval. No embeddings, no vector store, no Chroma or
@@ -640,6 +674,10 @@ cite nothing.
 | `src/offerpilot/panel/` | FastAPI app plus the two static pages |
 | `src/offerpilot/evaluate.py` | Metrics and groundedness heuristics |
 | `src/offerpilot/demo.py` | `MockLLM` and the seeded demo run |
+| `src/offerpilot/evalset.py` | Sampling, labeling sheets, label agreement |
+| `src/offerpilot/compare.py` | v1 vs v2 on copies of one labeled database |
+| `scripts/` | Build the eval set, import labels, compare versions |
+| `configs/` | The November 2026 corpus config |
 | `src/offerpilot/cli.py` | The seven subcommands |
 | `run_eval.py` | Shim for `offerpilot eval` |
 | `demo/` | Synthetic postings, profile and recorded outputs |
@@ -657,7 +695,7 @@ python -m ruff check .
 python -m pytest -q
 ```
 
-314 tests, all passing, and CI runs them on every push. `ruff check .` runs as
+355 tests, all passing, and CI runs them on every push. `ruff check .` runs as
 its own CI step, on pyflakes rules only — unused imports, unused locals,
 undefined names. `[tool.ruff.lint]` in `pyproject.toml` says why the stylistic
 and unused-argument rules are off. They need no network and

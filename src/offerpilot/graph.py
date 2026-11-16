@@ -26,7 +26,8 @@ from langgraph.graph import END, START, StateGraph
 from offerpilot.brief import ApplicationBrief, generate_brief
 from offerpilot.models import MatchResult, total_score
 from offerpilot.profile import Profile
-from offerpilot.prompts import MATCH_SYSTEM, MATCH_USER
+from offerpilot.prompts import (MATCH_SYSTEM, MATCH_SYSTEM_V2, MATCH_USER,
+                                MATCH_WARNINGS_V2)
 from offerpilot.store import db
 from offerpilot.llm import (AuthLLMError, RetryableLLMError, PermanentLLMError,
                             SpendCapExceeded)
@@ -72,13 +73,54 @@ def _sanitize(text: str) -> str:
     return _DELIM_RE.sub("[tag-removed]", folded)
 
 
-def build_prompts(job_row, profile: Profile):
+def build_prompts(job_row, profile: Profile, pipeline_version: str = "v1",
+                  warnings=()):
     user = MATCH_USER.format(
         profile_json=profile.model_dump_json(indent=2),
         title=_sanitize(job_row["title"]),
         location=_sanitize(job_row["location"] or ""),
         description=_sanitize(job_row["description_text"]))
-    return MATCH_SYSTEM, user
+    if pipeline_version == "v1":
+        return MATCH_SYSTEM, user
+    if warnings:
+        lines = "\n".join(
+            f"- {w['rule']}: {w['reason']}; quoted: "
+            f"\"{_sanitize(w['extracted_value'] or '')}\"" for w in warnings)
+        user += MATCH_WARNINGS_V2.format(warnings=lines)
+    return MATCH_SYSTEM_V2, user
+
+
+# v2: the only conflicts that may remove a job after the model has seen it.
+HARD_CONFLICTS = frozenset({"location", "work_authorization"})
+
+
+def is_hard_fail(match: MatchResult, pipeline_version: str = "v1") -> bool:
+    """Does this match result remove the job?
+
+    v1: any eligibility "fail". v2: only a fail typed as a location or
+    work-authorization conflict; graduation-year, "other" and untyped fails
+    become warnings and the job is routed by its score like any other.
+    """
+    if match.eligibility != "fail":
+        return False
+    if pipeline_version == "v1":
+        return True
+    return match.eligibility_conflict_type in HARD_CONFLICTS
+
+
+def _soft_warnings(conn, version_id):
+    """The v2 soft-rule fails recorded for this version, one per rule."""
+    rows = conn.execute(
+        "SELECT rule, reason, extracted_value FROM filter_results "
+        "WHERE job_version_id=? AND outcome='fail' ORDER BY id",
+        (version_id,)).fetchall()
+    from offerpilot.prefilter import SOFT_RULES
+    seen, out = set(), []
+    for r in rows:
+        if r["rule"] in SOFT_RULES["v2"] and r["rule"] not in seen:
+            seen.add(r["rule"])
+            out.append(r)
+    return out
 
 
 def _start_run(conn, version_id, run_meta=None):
@@ -107,7 +149,8 @@ def _log_step(conn, run_id, node, attempt, status, input=None, output=None,
     conn.commit()
 
 
-def make_evidence_validator(profile: Profile, threshold: int):
+def make_evidence_validator(profile: Profile, threshold: int,
+                            pipeline_version: str = "v1"):
     """Reject semantically wrong MatchResults by raising ValueError.
 
     Handed to `LLMClient.structured(validate=...)`, so a rejection buys the
@@ -134,7 +177,8 @@ def make_evidence_validator(profile: Profile, threshold: int):
         # permanent_error, which db.ALLOWED_TRANSITIONS only lets a human
         # reverse by hand. Keep this guard if this validator moves into the
         # LLM repair loop.
-        if (result.eligibility != "fail" and not result.evidence
+        # v2 sends soft fails to review too, so they need citations as well.
+        if (not is_hard_fail(result, pipeline_version) and not result.evidence
                 and total_score(result) >= threshold):
             raise ValueError(
                 "a score at or above the review threshold must cite at least "
@@ -163,6 +207,8 @@ class GraphContext:
     profile: Profile
     threshold: int
     brief_enabled: bool = True
+    pipeline_version: str = "v1"
+    warnings: tuple = ()
 
 
 class GraphState(TypedDict, total=False):
@@ -185,11 +231,13 @@ class GraphState(TypedDict, total=False):
 def _match_node(state: GraphState) -> dict:
     """The one paid call of the pipeline: score this job against the profile."""
     ctx = state["ctx"]
-    system, user = build_prompts(state["job_row"], ctx.profile)
+    system, user = build_prompts(state["job_row"], ctx.profile,
+                                 ctx.pipeline_version, ctx.warnings)
     result: MatchResult = ctx.llm.structured(
         node="match", run_id=state["run_id"], system=system, user=user,
         schema=MatchResult,
-        validate=make_evidence_validator(ctx.profile, ctx.threshold))
+        validate=make_evidence_validator(ctx.profile, ctx.threshold,
+                                         ctx.pipeline_version))
     _log_step(ctx.conn, state["run_id"], "match", state["attempt"], "ok",
               input=json.dumps({"system": system, "user": user}),
               output=result.model_dump_json())
@@ -199,12 +247,14 @@ def _match_node(state: GraphState) -> dict:
 def _gate(state: GraphState) -> str:
     """Pure routing: return the name of the next node. Writes nothing."""
     ctx, match = state["ctx"], state["match"]
-    if match.eligibility == "fail" or total_score(match) < ctx.threshold:
+    if (is_hard_fail(match, ctx.pipeline_version)
+            or total_score(match) < ctx.threshold):
         return "persist"
     if not ctx.brief_enabled:
         return "persist"
     try:
-        make_evidence_validator(ctx.profile, ctx.threshold)(match)
+        make_evidence_validator(ctx.profile, ctx.threshold,
+                                ctx.pipeline_version)(match)
     except ValueError:
         # `persist` owns this rejection -- it logs the reason and parks the
         # version on permanent_error. All the gate does is decline to spend a
@@ -260,7 +310,8 @@ def _persist_node(state: GraphState) -> dict:
     # the status known to still be 'matching', which is the one state
     # db.ALLOWED_TRANSITIONS lets us move to 'permanent_error' from.
     try:
-        make_evidence_validator(ctx.profile, ctx.threshold)(match)
+        make_evidence_validator(ctx.profile, ctx.threshold,
+                                ctx.pipeline_version)(match)
     except ValueError as e:
         _log_step(conn, state["run_id"], "gate", state["attempt"],
                   "permanent_error", error=str(e))
@@ -269,7 +320,7 @@ def _persist_node(state: GraphState) -> dict:
                 "run_status": "permanent_error"}
 
     score = total_score(match)
-    if match.eligibility == "fail":
+    if is_hard_fail(match, ctx.pipeline_version):
         final = "eligibility_failed"
     elif score < ctx.threshold:
         final = "scored_low"
@@ -309,7 +360,8 @@ def build_match_graph():
 def run_match_for_version(conn, llm, profile: Profile, version_row,
                           threshold: int, max_auto_retries: int,
                           brief_enabled: bool = False,
-                          run_meta: dict | None = None) -> str:
+                          run_meta: dict | None = None,
+                          pipeline_version: str = "v1") -> str:
     """Run one job version through the graph and return its final status.
 
     `brief_enabled` is opt-in here on purpose. This is the low-level entry
@@ -333,10 +385,14 @@ def run_match_for_version(conn, llm, profile: Profile, version_row,
     # Rebuilt here only so a failing call can be logged with what it was
     # given: `_match_node` builds its own from the same pure function off the
     # same row, and never sees this copy.
-    system, user = build_prompts(version_row, profile)
+    warnings = (tuple(_soft_warnings(conn, vid))
+                if pipeline_version != "v1" else ())
+    system, user = build_prompts(version_row, profile, pipeline_version,
+                                 warnings)
     prompt_input = json.dumps({"system": system, "user": user})
     ctx = GraphContext(conn=conn, llm=llm, profile=profile,
-                       threshold=threshold, brief_enabled=brief_enabled)
+                       threshold=threshold, brief_enabled=brief_enabled,
+                       pipeline_version=pipeline_version, warnings=warnings)
     try:
         out = build_match_graph().invoke({
             "ctx": ctx, "version_id": vid, "run_id": run_id,

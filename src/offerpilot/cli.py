@@ -46,8 +46,14 @@ def _collect_company(company):
     return []
 
 
+def pipeline_version(cfg) -> str:
+    """`pipeline.version` from config; v1 when absent."""
+    return str((cfg.get("pipeline") or {}).get("version", "v1"))
+
+
 def cmd_collect(conn, cfg, profile, limit=None) -> dict:
     companies = cfg.get("companies", [])
+    version = pipeline_version(cfg)
     # Recording companies must never cost the batch: one malformed config
     # entry is a per-company error below, not a whole-run abort.
     try:
@@ -78,7 +84,7 @@ def cmd_collect(conn, cfg, profile, limit=None) -> dict:
                 inserted += 1
                 results = prefilter.run_prefilter(job, profile)
                 db.record_filter_results(conn, vid, results)
-                db.set_status(conn, vid, prefilter.decide(results))
+                db.set_status(conn, vid, prefilter.decide(results, version))
             except Exception as e:
                 print(f"[collect] job {job.external_id} "
                       f"({_company_label(company)}) failed: {e}")
@@ -103,7 +109,8 @@ def cmd_match(conn, cfg, profile, llm, limit=None, run_meta=None) -> dict:
                                           threshold=threshold,
                                           max_auto_retries=retries,
                                           brief_enabled=brief_enabled,
-                                          run_meta=run_meta)
+                                          run_meta=run_meta,
+                                          pipeline_version=pipeline_version(cfg))
         except AuthLLMError as e:
             # Every remaining job would fail this way too; one rejected call
             # is the whole diagnosis. Caught before the generic handler
@@ -228,7 +235,8 @@ def main(argv=None):
     if args.command == "collect":
         # A run that crashed between upsert_job and the prefilter left rows
         # at 'new' that nothing else reads; heal them before collecting more.
-        orphans = db.sweep_stuck_new(conn, profile)
+        orphans = db.sweep_stuck_new(conn, profile,
+                                     version=pipeline_version(cfg))
         if orphans:
             print(f"[collect] re-prefiltered {orphans} orphaned job "
                   f"version(s) from an earlier run")

@@ -35,7 +35,32 @@ Location: {location}
 """
 
 
-BRIEF_SYSTEM = """You are drafting an internal application brief for one
+# Pipeline v2 additions. Appended to the v1 prompts rather than replacing
+# them, so the two versions differ only in what the comparison is about.
+MATCH_SYSTEM_V2 = MATCH_SYSTEM + """
+Additional rules (v2):
+- The candidate's graduation year must NOT lower any subscore and must NOT
+  be a reason for eligibility "fail". Mention a graduation-year mismatch in
+  uncertainties instead.
+- When eligibility is "fail", set eligibility_conflict_type to exactly one of
+  "location", "work_authorization", "graduation_year" or "other". Only a
+  location or work_authorization conflict quoted from the posting removes a
+  job; every other conflict is shown to the candidate as a warning.
+- PREFILTER WARNINGS, if present, were found by deterministic rules. Check them
+  against the posting: a remote option or another eligible office can
+  resolve a location warning.
+
+Extra MatchResult field: "eligibility_conflict_type":
+ "location|work_authorization|graduation_year|other"|null
+"""
+
+MATCH_WARNINGS_V2 = """
+PREFILTER WARNINGS (found by this system's rules; the quoted text comes from
+the untrusted posting):
+{warnings}
+"""
+
+BRIEF_SYSTEM ="""You are drafting an internal application brief for one
 candidate about one job. The brief is read only by the candidate; nothing you
 write is ever sent to the employer automatically.
 

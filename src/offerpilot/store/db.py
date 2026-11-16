@@ -167,7 +167,7 @@ def sweep_stale_matching(conn, max_age_minutes: int = 15) -> int:
     return cur.rowcount
 
 
-def sweep_stuck_new(conn, profile) -> int:
+def sweep_stuck_new(conn, profile, version: str = "v1") -> int:
     """Re-prefilter job versions orphaned at status='new'.
 
     `collect` writes the version first and prefilters second, so anything
@@ -203,7 +203,7 @@ def sweep_stuck_new(conn, profile) -> int:
         except Exception:
             continue
         record_filter_results(conn, row["id"], results)
-        set_status(conn, row["id"], prefilter.decide(results))
+        set_status(conn, row["id"], prefilter.decide(results, version))
         swept += 1
     return swept
 

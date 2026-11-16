@@ -363,7 +363,29 @@ def run_prefilter(job: NormalizedJob, profile: Profile) -> list[FilterResult]:
     return [rule(job, profile) for rule in RULES]
 
 
-def decide(results: list[FilterResult]) -> str:
-    if any(r.outcome == "fail" for r in results):
+# Pipeline v2 (PRV 201 M2): a fail on these rules no longer removes the job.
+# It reaches the match model as a warning, and the gate decides. The August
+# eval traced 6 of 7 missed good jobs to the graduation year; location is the
+# other rule whose "fail" a remote option or second office can overturn.
+SOFT_RULES = {"v1": frozenset(),
+              "v2": frozenset({"graduation_window", "location"})}
+
+
+def _soft_rules(version: str) -> frozenset:
+    if version not in SOFT_RULES:
+        raise ValueError(f"unknown pipeline version {version!r}; "
+                         f"expected one of {sorted(SOFT_RULES)}")
+    return SOFT_RULES[version]
+
+
+def warnings(results: list[FilterResult]) -> list[FilterResult]:
+    """The fails v2 hands to the model instead of acting on."""
+    soft = SOFT_RULES["v2"]
+    return [r for r in results if r.outcome == "fail" and r.rule in soft]
+
+
+def decide(results: list[FilterResult], version: str = "v1") -> str:
+    soft = _soft_rules(version)
+    if any(r.outcome == "fail" and r.rule not in soft for r in results):
         return "filtered_out"
     return "ready_for_match"

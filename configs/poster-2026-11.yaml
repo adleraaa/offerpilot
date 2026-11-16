@@ -1,0 +1,52 @@
+# Corpus for the iCNS poster / PRV 201 M3 comparison (collected 2026-11).
+# Boards were picked because a probe on 2026-11-12 found intern, new-grad or
+# early-career postings on them, most of them in the US. The August corpus had
+# 25 such titles out of 1,899, which is why it could not say much.
+llm:
+  base_url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  daily_spend_cap_usd: 3.0
+  prices:
+    deepseek-v4-flash:
+      input_cache_hit_per_mtok_usd: 0.007
+      input_cache_miss_per_mtok_usd: 0.22
+      output_per_mtok_usd: 0.66
+      peak_multiplier: 2.0
+match:
+  score_threshold: 60
+  max_auto_retries: 3
+brief:
+  enabled: false
+pipeline:
+  version: v1
+panel:
+  host: 127.0.0.1
+  port: 8000
+eval:
+  results_dir: evals/results
+  precision_at: [5, 10]
+companies:
+- {id: palantir, name: Palantir, ats: lever, ats_slug: palantir}
+- {id: zoox, name: Zoox, ats: lever, ats_slug: zoox}
+- {id: waymo, name: Waymo, ats: greenhouse, ats_slug: waymo}
+- {id: stripe, name: Stripe, ats: greenhouse, ats_slug: stripe}
+- {id: jumptrading, name: Jump Trading, ats: greenhouse, ats_slug: jumptrading}
+- {id: nytimes, name: The New York Times, ats: greenhouse, ats_slug: thenewyorktimes}
+- {id: imc, name: IMC, ats: greenhouse, ats_slug: imc}
+- {id: coinbase, name: Coinbase, ats: greenhouse, ats_slug: coinbase}
+- {id: point72, name: Point72, ats: greenhouse, ats_slug: point72}
+- {id: pinterest, name: Pinterest, ats: greenhouse, ats_slug: pinterest}
+- {id: samsara, name: Samsara, ats: greenhouse, ats_slug: samsara}
+- {id: verkada, name: Verkada, ats: greenhouse, ats_slug: verkada}
+- {id: figma, name: Figma, ats: greenhouse, ats_slug: figma}
+- {id: roblox, name: Roblox, ats: greenhouse, ats_slug: roblox}
+- {id: affirm, name: Affirm, ats: greenhouse, ats_slug: affirm}
+- {id: seatgeek, name: SeatGeek, ats: greenhouse, ats_slug: seatgeek}
+- {id: gemini, name: Gemini, ats: greenhouse, ats_slug: gemini}
+- {id: virtu, name: Virtu, ats: greenhouse, ats_slug: virtu}
+- {id: tower, name: Tower Research Capital, ats: greenhouse, ats_slug: towerresearchcapital}
+- {id: sigma, name: Sigma Computing, ats: greenhouse, ats_slug: sigmacomputing}
+- {id: duolingo, name: Duolingo, ats: greenhouse, ats_slug: duolingo}
+- {id: databricks, name: Databricks, ats: greenhouse, ats_slug: databricks}
+- {id: datadog, name: Datadog, ats: greenhouse, ats_slug: datadog}
+- {id: mongodb, name: MongoDB, ats: greenhouse, ats_slug: mongodb}

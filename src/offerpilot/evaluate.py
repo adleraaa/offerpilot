@@ -231,7 +231,9 @@ def _db_path(conn) -> str:
 
 
 def run_eval(conn, profile, *, results_dir: str = "evals/results",
-             precision_at=(5, 10), profile_path: str | None = None) -> dict:
+             precision_at=(5, 10), profile_path: str | None = None,
+             extra: dict | None = None) -> dict:
+    """`extra` is merged into the result file, e.g. which pipeline version ran."""
     blind = {}
     for row in db.get_labels(conn, label_source="blind_eval"):
         # The blind view refuses a second label per version, so this is one
@@ -310,9 +312,12 @@ def run_eval(conn, profile, *, results_dir: str = "evals/results",
         "note": ("Formal metrics use blind_eval labels only; review_feedback "
                  "labels are auxiliary signal (spec section 4)."),
     }
+    if extra:
+        result.update(extra)
     os.makedirs(results_dir, exist_ok=True)
     stamp = result["generated_at"].replace(":", "").replace("-", "")
-    path = os.path.join(results_dir, f"eval-{stamp}.json")
+    suffix = f"-{result['pipeline_version']}" if "pipeline_version" in result else ""
+    path = os.path.join(results_dir, f"eval-{stamp}{suffix}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     result["written_to"] = path

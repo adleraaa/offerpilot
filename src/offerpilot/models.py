@@ -31,6 +31,10 @@ class MatchResult(BaseModel):
     eligibility: Literal["pass", "fail", "unknown"]
     eligibility_reasons: list[str] = []
     eligibility_evidence_excerpt: Optional[str] = None
+    # v2 only: what kind of conflict a "fail" is. The v2 gate removes a job
+    # only for location or work_authorization; anything else is a warning.
+    eligibility_conflict_type: Optional[Literal[
+        "graduation_year", "location", "work_authorization", "other"]] = None
     skills_score: int = Field(ge=0, le=30)
     project_score: int = Field(ge=0, le=20)
     domain_score: int = Field(ge=0, le=15)
