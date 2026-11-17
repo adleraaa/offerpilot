@@ -5,6 +5,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
+from offerpilot.models import FilterResult
 from offerpilot.panel.app import create_app
 from offerpilot.store import db
 
@@ -65,6 +66,117 @@ def test_item_detail_exposes_evidence_and_unresolved_eligibility(client, seeded)
 
 def test_missing_item_is_404(client):
     assert client.get("/api/item/9999").status_code == 404
+
+
+# --- v2 warnings -------------------------------------------------------------
+# M2: the review panel shows each job's warnings. v2 sends two kinds of "fail"
+# to review instead of removing the job: a soft prefilter rule that matched,
+# and a conflict the model typed as something other than location or work
+# authorization. The student has to see both, with the sentence behind each.
+
+def _seed_review(tmp_path, match_extra, filter_results=()):
+    path = str(tmp_path / "w.db")
+    conn = db.connect(path)
+    db.init_schema(conn)
+    from tests.conftest import _make_job
+    _, vid = db.upsert_job(conn, _make_job("7"))
+    db.record_filter_results(conn, vid, list(filter_results))
+    db.set_status(conn, vid, "ready_for_match")
+    db.set_status(conn, vid, "matching")
+    match = {"eligibility": "pass", "eligibility_reasons": [],
+             "eligibility_evidence_excerpt": None, "skills_score": 25,
+             "project_score": 15, "domain_score": 10, "seniority_score": 10,
+             "preference_score": 15,
+             "evidence": [{"source_id": "pathpilot", "section": "",
+                           "supporting_text": "built an LLM app"}],
+             "gaps": [], "uncertainties": [], "confidence": 0.7, **match_extra}
+    conn.execute("INSERT INTO review_items(job_version_id, match_json, "
+                 "total_score) VALUES(?,?,?)", (vid, json.dumps(match), 75))
+    conn.commit()
+    db.set_status(conn, vid, "pending_review")
+    conn.close()
+    return path, vid
+
+
+_GRADUATION_FAIL = {"eligibility": "fail",
+                    "eligibility_reasons": ["wants 2026 graduates"],
+                    "eligibility_evidence_excerpt": "Class of 2026 only",
+                    "eligibility_conflict_type": "graduation_year"}
+
+
+def _warnings(tmp_path, profile, match_extra, filter_results=()):
+    path, vid = _seed_review(tmp_path, match_extra, filter_results)
+    body = TestClient(create_app(path, profile)).get(f"/api/item/{vid}").json()
+    return body["warnings"]
+
+
+def test_item_detail_lists_a_soft_prefilter_fail_as_a_warning(tmp_path, profile):
+    warnings = _warnings(tmp_path, profile, {}, [
+        FilterResult(outcome="fail", rule="graduation_window",
+                     extracted_value="Class of 2026 only",
+                     reason="graduates 2028-05, posting wants 2026")])
+    assert warnings == [{"source": "prefilter", "kind": "graduation_window",
+                         "reason": "graduates 2028-05, posting wants 2026",
+                         "quote": "Class of 2026 only"}]
+
+
+def test_prefilter_passes_and_unknowns_are_not_warnings(tmp_path, profile):
+    warnings = _warnings(tmp_path, profile, {}, [
+        FilterResult(outcome="pass", rule="graduation_window", reason="ok"),
+        FilterResult(outcome="unknown", rule="location", reason="none found"),
+        FilterResult(outcome="pass", rule="pay_floor", reason="ok")])
+    assert warnings == []
+
+
+def test_item_detail_lists_the_models_soft_conflict_as_a_warning(tmp_path,
+                                                                 profile):
+    warnings = _warnings(tmp_path, profile, _GRADUATION_FAIL)
+    assert warnings == [{"source": "model", "kind": "graduation_year",
+                         "reason": "wants 2026 graduates",
+                         "quote": "Class of 2026 only"}]
+
+
+def test_an_untyped_model_fail_is_shown_as_an_other_conflict(tmp_path, profile):
+    untyped = {**_GRADUATION_FAIL, "eligibility_conflict_type": None}
+    assert [w["kind"] for w in _warnings(tmp_path, profile, untyped)] == ["other"]
+
+
+def test_prefilter_and_model_warnings_are_listed_together(tmp_path, profile):
+    warnings = _warnings(tmp_path, profile, _GRADUATION_FAIL, [
+        FilterResult(outcome="fail", rule="location",
+                     extracted_value="Onsite in Austin, TX",
+                     reason="Austin is not in the profile's locations")])
+    assert [(w["source"], w["kind"]) for w in warnings] == [
+        ("prefilter", "location"), ("model", "graduation_year")]
+
+
+def test_a_job_with_nothing_flagged_has_an_empty_warning_list(client, seeded):
+    _, vid = seeded
+    assert client.get(f"/api/item/{vid}").json()["warnings"] == []
+
+
+def test_the_detail_view_renders_the_warnings_it_is_sent():
+    """Read as source, like the href test below: there is no JS runtime here.
+
+    Pins that the detail view hands `d.warnings` to a renderer when there are
+    any, and that the renderer writes both halves of a warning -- the reason
+    and the quoted sentence -- through `el()`, the same text-only path every
+    other piece of job text takes.
+    """
+    source = (STATIC / "panel.js").read_text(encoding="utf-8")
+    assert re.search(r"if \(d\.warnings && d\.warnings\.length\)\s*\{?\s*"
+                     r"panel\.appendChild\(warningsBlock\(d\.warnings\)\)",
+                     source), "loadItem never renders d.warnings"
+    start = source.index("function warningsBlock(")
+    body = source[start:source.index("\n}\n", start)]
+    assert re.search(r"el\(\"p\", w\.reason", body), body
+    assert re.search(r"el\(\"p\", [^\n]*w\.quote", body), body
+
+
+def test_the_stylesheet_styles_a_warning_from_the_warning_tokens():
+    css = _css()
+    rule = _balanced_block(css, css.index(".warning {"))
+    assert "var(--warn-bg)" in rule and "var(--warn-fg)" in rule, rule
 
 
 def test_approve_writes_review_feedback_label_and_moves_status(client, seeded):
@@ -671,7 +783,11 @@ def test_every_colour_in_the_stylesheet_comes_from_a_token():
 
 
 def test_panel_text_clears_wcag_contrast_in_both_themes():
-    """Measured, not eyeballed. Body text 4.5:1, the warning banner 3:1.
+    """Measured, not eyeballed. Body text 4.5:1, warnings included.
+
+    The warning pair was held to 3:1 while it only coloured one bold banner.
+    The v2 warning cards put a reason and a quoted sentence on the same
+    background at body size, so it now has to clear 4.5:1 like the rest.
 
     Before this, a dark-OS reader got `--fg` #1a1a1a on the browser's dark
     canvas: 1.08:1, which is the queue buttons and the entire posting body
@@ -681,7 +797,7 @@ def test_panel_text_clears_wcag_contrast_in_both_themes():
     dark = {**light, **overrides}
     checks = [("--fg", "--bg", 4.5), ("--muted", "--bg", 4.5),
               ("--link", "--bg", 4.5), ("--fg", "--code-bg", 4.5),
-              ("--muted", "--code-bg", 4.5), ("--warn-fg", "--warn-bg", 3.0)]
+              ("--muted", "--code-bg", 4.5), ("--warn-fg", "--warn-bg", 4.5)]
     failures = []
     for theme, palette in (("light", light), ("dark", dark)):
         for fg, bg, need in checks:

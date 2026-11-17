@@ -80,6 +80,31 @@ function evidenceBlock(evidence) {
   return box;
 }
 
+// Pipeline v2 sends two kinds of "fail" to review instead of removing the job:
+// a prefilter rule that matched (graduation year, location), and a conflict
+// the model typed as something other than location or work authorization.
+// The API lists both in `warnings`, each with the sentence it was found in,
+// so the reviewer can check the claim against the posting.
+const WARNING_KINDS = {graduation_window: "Graduation year",
+                       graduation_year: "Graduation year",
+                       location: "Location",
+                       work_authorization: "Work authorization",
+                       other: "Other conflict"};
+
+function warningsBlock(warnings) {
+  const box = el("div", null, "block");
+  box.appendChild(el("h3", `Warnings (${warnings.length})`));
+  for (const w of warnings) {
+    const card = el("div", null, "warning");
+    const found = w.source === "prefilter" ? "prefilter rule" : "match model";
+    card.appendChild(el("strong", `${WARNING_KINDS[w.kind] || w.kind} · ${found}`));
+    if (w.reason) card.appendChild(el("p", w.reason));
+    if (w.quote) card.appendChild(el("p", `Posting says: "${w.quote}"`, "quote"));
+    box.appendChild(card);
+  }
+  return box;
+}
+
 function externalLink(url) {
   // The posting's URL arrives inside the ATS payload. `canonicalize_url`
   // refuses a non-http(s) scheme at the collector boundary, but demo fixtures
@@ -183,6 +208,7 @@ async function loadItem(versionId) {
     `${d.job.company_id} · ${d.job.location || "—"} · score ${d.total_score}/100`,
     "muted"));
   panel.appendChild(externalLink(d.job.url));
+  if (d.warnings && d.warnings.length) panel.appendChild(warningsBlock(d.warnings));
   panel.appendChild(scoreRow(d.match));
   panel.appendChild(evidenceBlock(d.match.evidence));
   panel.appendChild(list("Gaps", d.match.gaps));

@@ -73,6 +73,54 @@ def _sanitize(text: str) -> str:
     return _DELIM_RE.sub("[tag-removed]", folded)
 
 
+# Typography the quote check folds away. NFKC (inside `_sanitize`) already
+# handles ligatures, fullwidth forms and the non-breaking hyphen; it leaves
+# curly quotes and the dash family alone, and a model copying a sentence
+# routinely straightens those.
+_QUOTE_FOLD = str.maketrans({
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",
+    "“": '"', "”": '"', "„": '"', "‟": '"',
+    "‐": "-", "‑": "-", "‒": "-", "–": "-",
+    "—": "-", "―": "-", "−": "-",
+})
+
+
+def _fold(text: str) -> str:
+    """Text as the model saw it, minus case, spacing and typography."""
+    return " ".join(_sanitize(text).translate(_QUOTE_FOLD).split()).casefold()
+
+
+_ELLIPSIS = re.compile(r"\.{3,}")
+
+
+def _posting_as_shown(job_row) -> str:
+    """The posting block of `MATCH_USER`: what the model reads and quotes."""
+    return (f"Title: {job_row['title'] or ''}\n"
+            f"Location: {job_row['location'] or ''}\n"
+            f"{job_row['description_text'] or ''}")
+
+
+def quote_in_posting(excerpt: str, job_row) -> bool:
+    """Is `excerpt` something the posting actually says?
+
+    The posting is taken the way the prompt lays it out, labels included,
+    because that is the text the model quotes from: when the 25 "fail"
+    answers recorded on 2026-08-20 were replayed through this check, three of
+    the ten it first refused were the literal "Location: ..." line. Case, runs
+    of whitespace and curly-versus-straight punctuation are ignored; wording
+    is not.
+
+    An excerpt may join several quotes with an ellipsis, which is how a model
+    cites two sentences at once. Then every part has to be in the posting. A
+    part with no letter or digit in it proves nothing, so it is refused.
+    """
+    haystack = _fold(_posting_as_shown(job_row))
+    parts = [p.strip("\"' ") for p in _ELLIPSIS.split(_fold(excerpt or ""))]
+    parts = [p for p in parts if p]
+    return bool(parts) and all(
+        any(ch.isalnum() for ch in p) and p in haystack for p in parts)
+
+
 def build_prompts(job_row, profile: Profile, pipeline_version: str = "v1",
                   warnings=()):
     user = MATCH_USER.format(
@@ -108,21 +156,6 @@ def is_hard_fail(match: MatchResult, pipeline_version: str = "v1") -> bool:
     return match.eligibility_conflict_type in HARD_CONFLICTS
 
 
-def _soft_warnings(conn, version_id):
-    """The v2 soft-rule fails recorded for this version, one per rule."""
-    rows = conn.execute(
-        "SELECT rule, reason, extracted_value FROM filter_results "
-        "WHERE job_version_id=? AND outcome='fail' ORDER BY id",
-        (version_id,)).fetchall()
-    from offerpilot.prefilter import SOFT_RULES
-    seen, out = set(), []
-    for r in rows:
-        if r["rule"] in SOFT_RULES["v2"] and r["rule"] not in seen:
-            seen.add(r["rule"])
-            out.append(r)
-    return out
-
-
 def _start_run(conn, version_id, run_meta=None):
     meta = run_meta or {}
     cur = conn.execute(
@@ -150,7 +183,7 @@ def _log_step(conn, run_id, node, attempt, status, input=None, output=None,
 
 
 def make_evidence_validator(profile: Profile, threshold: int,
-                            pipeline_version: str = "v1"):
+                            pipeline_version: str = "v1", job_row=None):
     """Reject semantically wrong MatchResults by raising ValueError.
 
     Handed to `LLMClient.structured(validate=...)`, so a rejection buys the
@@ -158,6 +191,9 @@ def make_evidence_validator(profile: Profile, threshold: int,
     parking the version on `permanent_error` at the first offence. The
     messages below are written to be read by the model: they name the mistake
     and the legal alternatives.
+
+    `job_row` arms the v2 quote check. Without it only the profile-side rules
+    run, which is all v1 ever had.
     """
     valid = profile.experience_ids()
 
@@ -168,6 +204,20 @@ def make_evidence_validator(profile: Profile, threshold: int,
                 f"evidence source_id {bad} do not exist. Valid ids are: "
                 f"{sorted(valid)}. Cite only these, or return an empty "
                 f"evidence list and a lower score.")
+        # v2: a fail either removes the job or becomes a warning the student
+        # reads, so the sentence behind it has to be the posting's own. A
+        # paraphrase or an invented requirement is sent back for repair, and
+        # a job is never dropped on words the posting does not contain.
+        if (pipeline_version != "v1" and job_row is not None
+                and result.eligibility == "fail"
+                and not quote_in_posting(result.eligibility_evidence_excerpt,
+                                         job_row)):
+            raise ValueError(
+                "eligibility_evidence_excerpt must be copied word for word "
+                "from the job posting, and this one does not appear in it. "
+                "Quote the exact sentence that conflicts with the profile, "
+                "or set eligibility to \"unknown\" if there is no such "
+                "sentence.")
         # Only jobs the model considers viable can reach review, so only they
         # need profile citations. When eligibility is "fail" the posting is
         # the evidence -- MatchResult already requires
@@ -237,7 +287,8 @@ def _match_node(state: GraphState) -> dict:
         node="match", run_id=state["run_id"], system=system, user=user,
         schema=MatchResult,
         validate=make_evidence_validator(ctx.profile, ctx.threshold,
-                                         ctx.pipeline_version))
+                                         ctx.pipeline_version,
+                                         job_row=state["job_row"]))
     _log_step(ctx.conn, state["run_id"], "match", state["attempt"], "ok",
               input=json.dumps({"system": system, "user": user}),
               output=result.model_dump_json())
@@ -254,7 +305,8 @@ def _gate(state: GraphState) -> str:
         return "persist"
     try:
         make_evidence_validator(ctx.profile, ctx.threshold,
-                                ctx.pipeline_version)(match)
+                                ctx.pipeline_version,
+                                job_row=state["job_row"])(match)
     except ValueError:
         # `persist` owns this rejection -- it logs the reason and parks the
         # version on permanent_error. All the gate does is decline to spend a
@@ -311,7 +363,8 @@ def _persist_node(state: GraphState) -> dict:
     # db.ALLOWED_TRANSITIONS lets us move to 'permanent_error' from.
     try:
         make_evidence_validator(ctx.profile, ctx.threshold,
-                                ctx.pipeline_version)(match)
+                                ctx.pipeline_version,
+                                job_row=state["job_row"])(match)
     except ValueError as e:
         _log_step(conn, state["run_id"], "gate", state["attempt"],
                   "permanent_error", error=str(e))
@@ -385,7 +438,7 @@ def run_match_for_version(conn, llm, profile: Profile, version_row,
     # Rebuilt here only so a failing call can be logged with what it was
     # given: `_match_node` builds its own from the same pure function off the
     # same row, and never sees this copy.
-    warnings = (tuple(_soft_warnings(conn, vid))
+    warnings = (tuple(db.get_soft_warnings(conn, vid))
                 if pipeline_version != "v1" else ())
     system, user = build_prompts(version_row, profile, pipeline_version,
                                  warnings)

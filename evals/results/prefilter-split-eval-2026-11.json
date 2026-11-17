@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-11-16T22:51:38+00:00",
+  "git_commit": "6bf72085f185a5f0bfbae8f67894bcd091f1fb91",
+  "database": "eval-2026-11.db",
+  "total": 100,
+  "v1": {
+    "ready_for_match": 63,
+    "filtered_out": 37
+  },
+  "v2": {
+    "ready_for_match": 86,
+    "filtered_out": 14
+  },
+  "student_level": {
+    "total": 60,
+    "v1": {
+      "ready_for_match": 41,
+      "filtered_out": 19
+    },
+    "v2": {
+      "ready_for_match": 59,
+      "filtered_out": 1
+    }
+  },
+  "kept_by_v2_only": {
+    "total": 23,
+    "student_level": 18,
+    "by_rule": {
+      "location": 20,
+      "graduation_window+location": 1,
+      "graduation_window": 2
+    }
+  },
+  "removed_by_v2": {
+    "years_of_experience": 14
+  }
+}

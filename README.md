@@ -303,8 +303,8 @@ The two pages carry a light and a dark palette, both of which are checked
 rather than eyed. Every colour in `panel/static/style.css` is a custom property
 defined on `:root`, the `prefers-color-scheme: dark` block redefines those
 tokens and nothing else, and a test parses the stylesheet and computes the WCAG
-contrast of each pair — 4.5:1 for body text, 3:1 for the eligibility banner —
-in both themes. That test exists because the file used to declare
+contrast of each pair in both themes: 4.5:1 for body text, and 4.5:1 for the
+warning colours too, since the v2 warning cards set body-size text on them. That test exists because the file used to declare
 `color-scheme: light dark`, define only the light half, and leave `body` with no
 background: on a dark-themed OS the browser painted its dark canvas under
 near-black text, 1.08:1, and the queue and the posting body were invisible.
@@ -603,6 +603,22 @@ config (`v1` stays the default):
 - **Gate.** v2 removes a job after the model only for a `location` or
   `work_authorization` conflict (`graph.is_hard_fail`). A graduation-year,
   `other` or untyped fail becomes a warning and the job is routed by its score.
+- **Quote check.** In v2 an `eligibility="fail"` has to quote the posting word
+  for word. `graph.quote_in_posting` compares `eligibility_evidence_excerpt`
+  with the posting as the prompt lays it out (the `Title:` and `Location:`
+  lines, then the description), ignoring case, spacing and
+  curly-versus-straight punctuation, but not wording. Several quotes joined by
+  an ellipsis are accepted when every part is in the posting. A quote that is
+  not there is sent back to the model for repair like any other invalid
+  answer, and `persist` checks it again, so a job is neither removed nor
+  flagged on words the posting does not contain. Replayed through this check,
+  22 of the 25 real `fail` answers recorded on 2026-08-20 pass; the other
+  three paraphrase or splice the posting and would have been sent back.
+- **Review panel.** The detail view lists a job's warnings above the scores:
+  every soft prefilter rule that matched and every fail the gate let through,
+  each with its reason and the sentence it was found in (`warnings` in
+  `/api/item/{id}`). A job v1 would have dropped silently now arrives with the
+  reason it was nearly dropped.
 
 The second eval is built to avoid the August set's two problems:
 
@@ -621,6 +637,32 @@ The second eval is built to avoid the August set's two problems:
 `scripts/compare_versions.py` then runs v1 and v2 on separate copies of the
 labeled database, so both are measured against the same labels. No results
 yet: the labels are not in.
+
+### Prefilter split, 2026-11-16
+
+One question about v2 needs neither labels nor a key: how many jobs reach the
+model that v1 removed. `scripts/compare_prefilter.py` opens a collected
+database read-only, runs both versions' rules in memory and counts
+(`compare.prefilter_split`). On the November corpus, with the candidate's
+real profile:
+
+| | Postings | Student-level titles |
+|---|---|---|
+| Collected | 6,060 | 485 |
+| v1 removes before the model | 2,377 | 150 |
+| v2 removes before the model | 1,465 | 1 |
+| Kept by v2 only | 912 | 149 |
+
+Of the 912, 858 had tripped the location rule alone, 36 the graduation window
+alone and 18 both. Everything v2 still removes fails `years_of_experience`
+(1,452) or `work_authorization` (15, two of them both). On the 100-job eval
+set the same count is 63 jobs reaching the model under v1 and 86 under v2. Both
+result files are in `evals/results/prefilter-split-*.json`.
+
+This counts the prefilter and nothing after it. v1 was cutting 31% of the
+student-level postings before the model read a word of them, most often on
+location; whether the 912 are good jobs, and what the model and the gate do
+with them, is what the labeled comparison above is for.
 
 ## What is not built
 
@@ -695,7 +737,7 @@ python -m ruff check .
 python -m pytest -q
 ```
 
-355 tests, all passing, and CI runs them on every push. `ruff check .` runs as
+380 tests, all passing, and CI runs them on every push. `ruff check .` runs as
 its own CI step, on pyflakes rules only — unused imports, unused locals,
 undefined names. `[tool.ruff.lint]` in `pyproject.toml` says why the stylistic
 and unused-argument rules are off. They need no network and

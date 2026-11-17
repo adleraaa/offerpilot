@@ -1,0 +1,39 @@
+{
+  "generated_at": "2026-11-16T22:51:55+00:00",
+  "git_commit": "6bf72085f185a5f0bfbae8f67894bcd091f1fb91",
+  "database": "poster-2026-11.db",
+  "total": 6060,
+  "v1": {
+    "ready_for_match": 3683,
+    "filtered_out": 2377
+  },
+  "v2": {
+    "ready_for_match": 4595,
+    "filtered_out": 1465
+  },
+  "student_level": {
+    "total": 485,
+    "v1": {
+      "ready_for_match": 335,
+      "filtered_out": 150
+    },
+    "v2": {
+      "ready_for_match": 484,
+      "filtered_out": 1
+    }
+  },
+  "kept_by_v2_only": {
+    "total": 912,
+    "student_level": 149,
+    "by_rule": {
+      "location": 858,
+      "graduation_window": 36,
+      "graduation_window+location": 18
+    }
+  },
+  "removed_by_v2": {
+    "years_of_experience": 1450,
+    "work_authorization": 13,
+    "work_authorization+years_of_experience": 2
+  }
+}

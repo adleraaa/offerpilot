@@ -82,6 +82,49 @@ def test_comparison_runs_each_version_on_its_own_copy(tmp_path):
         "SELECT status FROM job_versions")} == {"new"}
 
 
+def _mixed_db(tmp_path):
+    path = str(tmp_path / "mixed.db")
+    conn = db.connect(path)
+    db.init_schema(conn)
+    db.upsert_job(conn, _job(1, "SWE Intern",
+                             "Open to students graduating in 2026."))
+    db.upsert_job(conn, _job(2, "SWE Intern", "Build tools."))
+    db.upsert_job(conn, _job(3, "Staff Engineer",
+                             "Requires 8+ years of experience."))
+    return conn
+
+
+def test_prefilter_split_counts_what_each_version_sends_to_the_model(tmp_path):
+    conn = _mixed_db(tmp_path)
+    out = compare.prefilter_split(conn, load_profile("profile.example.yaml"))
+    assert out["total"] == 3
+    assert out["v1"] == {"ready_for_match": 1, "filtered_out": 2}
+    assert out["v2"] == {"ready_for_match": 2, "filtered_out": 1}
+    # The graduation-window job is the one only v2 keeps, and the rule that
+    # had fired is named; the senior job is removed by a hard rule in both.
+    assert out["kept_by_v2_only"] == {"total": 1, "student_level": 1,
+                                      "by_rule": {"graduation_window": 1}}
+    assert out["removed_by_v2"] == {"years_of_experience": 1}
+
+
+def test_prefilter_split_reports_student_level_titles_separately(tmp_path):
+    conn = _mixed_db(tmp_path)
+    out = compare.prefilter_split(conn, load_profile("profile.example.yaml"))
+    assert out["student_level"] == {
+        "total": 2,
+        "v1": {"ready_for_match": 1, "filtered_out": 1},
+        "v2": {"ready_for_match": 2, "filtered_out": 0}}
+
+
+def test_prefilter_split_writes_nothing(tmp_path):
+    conn = _mixed_db(tmp_path)
+    compare.prefilter_split(conn, load_profile("profile.example.yaml"))
+    assert {r["status"] for r in conn.execute(
+        "SELECT status FROM job_versions")} == {"new"}
+    assert conn.execute(
+        "SELECT COUNT(*) n FROM filter_results").fetchone()["n"] == 0
+
+
 def test_reset_clears_a_previous_run_but_keeps_labels(tmp_path):
     src = _eval_db(tmp_path)
     conn = db.connect(src)

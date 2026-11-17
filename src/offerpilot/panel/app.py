@@ -128,6 +128,28 @@ class BlindLabel(BaseModel):
     notes: Optional[str] = None
 
 
+def _warnings(conn: sqlite3.Connection, version_id: int, match: dict) -> list:
+    """What pipeline v2 sent to review instead of removing the job.
+
+    Two sources. A soft prefilter rule that matched (graduation year or
+    location): `filter_results` records it under either pipeline version, but
+    only v2 lets such a job get this far. And a "fail" from the model, which
+    reaches review only when v2's gate judged it a warning rather than a
+    removal. Each carries the sentence it was found in, verbatim, so the
+    student can check the claim against the posting.
+    """
+    out = [{"source": "prefilter", "kind": r["rule"], "reason": r["reason"],
+            "quote": r["extracted_value"]}
+           for r in db.get_soft_warnings(conn, version_id)]
+    if match.get("eligibility") == "fail":
+        out.append({
+            "source": "model",
+            "kind": match.get("eligibility_conflict_type") or "other",
+            "reason": "; ".join(match.get("eligibility_reasons") or []),
+            "quote": match.get("eligibility_evidence_excerpt")})
+    return out
+
+
 def _row_to_queue_item(row: sqlite3.Row) -> dict:
     return {"job_version_id": row["job_version_id"],
             "title": row["title"], "company_id": row["company_id"],
@@ -197,9 +219,10 @@ def create_app(db_path: str, profile, allowed_hosts=ALLOWED_HOSTS) -> FastAPI:
     def api_item(version_id: int):
         with conn() as c:
             row = db.get_review_item(c, version_id)
-        if row is None:
-            raise HTTPException(404, "no review item for that job version")
-        match = json.loads(row["match_json"])
+            if row is None:
+                raise HTTPException(404, "no review item for that job version")
+            match = json.loads(row["match_json"])
+            warnings = _warnings(c, version_id, match)
         brief_json = row["edited_brief_json"] or row["brief_json"]
         return {
             "job_version_id": row["job_version_id"],
@@ -207,6 +230,8 @@ def create_app(db_path: str, profile, allowed_hosts=ALLOWED_HOSTS) -> FastAPI:
             "total_score": row["total_score"],
             # `unknown` is never silently a pass: the panel banners it.
             "eligibility_unresolved": match.get("eligibility") == "unknown",
+            # v2 only: what would have removed this job under v1.
+            "warnings": warnings,
             "match": match,
             "brief": json.loads(brief_json) if brief_json else None,
             "brief_is_edited": row["edited_brief_json"] is not None,

@@ -59,6 +59,10 @@ main { display: flex; align-items: flex-start; }
 .muted { color: var(--muted); font-size: .9em; }
 .banner { background: var(--warn-bg); color: var(--warn-fg); padding: .6rem .8rem;
           border-radius: 4px; margin-bottom: .8rem; font-weight: 600; }
+.warning { background: var(--warn-bg); color: var(--warn-fg); padding: .5rem .8rem;
+           border-radius: 4px; margin-bottom: .5rem; }
+.warning p { margin: .2rem 0 0; }
+.warning .quote { font-style: italic; }
 .scores { display: flex; gap: 1rem; margin: 1rem 0; }
 .score { display: flex; flex-direction: column; }
 .block { margin: 1.2rem 0; }

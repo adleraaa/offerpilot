@@ -218,6 +218,28 @@ def record_filter_results(conn, version_id: int,
     conn.commit()
 
 
+def get_soft_warnings(conn: sqlite3.Connection,
+                      version_id: int) -> list[sqlite3.Row]:
+    """The soft-rule fails recorded for this version, the first per rule.
+
+    These are the prefilter findings pipeline v2 passes on as warnings
+    instead of acting on. Two readers: the match prompt quotes them to the
+    model, and the review panel shows them to the student.
+    """
+    from offerpilot.prefilter import SOFT_RULES
+
+    rows = conn.execute(
+        "SELECT rule, reason, extracted_value FROM filter_results "
+        "WHERE job_version_id=? AND outcome='fail' ORDER BY id",
+        (version_id,)).fetchall()
+    seen, out = set(), []
+    for r in rows:
+        if r["rule"] in SOFT_RULES["v2"] and r["rule"] not in seen:
+            seen.add(r["rule"])
+            out.append(r)
+    return out
+
+
 def upsert_companies(conn: sqlite3.Connection, companies: list[dict]) -> int:
     """Record config-declared companies; returns how many were written.
 
